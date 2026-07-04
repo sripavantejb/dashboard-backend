@@ -32,7 +32,7 @@ export class ExpenseController {
 
   async update(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const expense = await expenseService.update(req.user!.organizationId, req.params.id as string, req.body);
+      const expense = await expenseService.update(req.user!.organizationId, req.user!.id, req.params.id as string, req.body);
       res.json({ success: true, data: expense });
     } catch (error) {
       next(error);
@@ -41,7 +41,7 @@ export class ExpenseController {
 
   async delete(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      await expenseService.delete(req.user!.organizationId, req.params.id as string);
+      await expenseService.delete(req.user!.organizationId, req.user!.id, req.params.id as string);
       res.json({ success: true, message: 'Expense deleted' });
     } catch (error) {
       next(error);

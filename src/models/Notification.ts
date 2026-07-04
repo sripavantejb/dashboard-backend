@@ -5,7 +5,9 @@ export type NotificationType =
   | 'lead_assigned' | 'lead_updated'
   | 'proposal_opened' | 'invoice_paid'
   | 'meeting_reminder' | 'follow_up_reminder'
-  | 'deadline_reminder' | 'system_alert' | 'approval_request';
+  | 'deadline_reminder' | 'system_alert' | 'approval_request'
+  | 'budget_received' | 'budget_pending' | 'project_spending_added'
+  | 'project_revenue_adjusted' | 'finance_updated';
 
 export interface INotification extends Document {
   organizationId: Types.ObjectId;
@@ -26,7 +28,7 @@ const notificationSchema = new Schema<INotification>({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   type: {
     type: String,
-    enum: ['task_assigned', 'task_updated', 'task_completed', 'lead_assigned', 'lead_updated', 'proposal_opened', 'invoice_paid', 'meeting_reminder', 'follow_up_reminder', 'deadline_reminder', 'system_alert', 'approval_request'],
+    enum: ['task_assigned', 'task_updated', 'task_completed', 'lead_assigned', 'lead_updated', 'proposal_opened', 'invoice_paid', 'meeting_reminder', 'follow_up_reminder', 'deadline_reminder', 'system_alert', 'approval_request', 'budget_received', 'budget_pending', 'project_spending_added', 'project_revenue_adjusted', 'finance_updated'],
     required: true,
   },
   title: { type: String, required: true },

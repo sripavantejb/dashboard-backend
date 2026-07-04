@@ -22,3 +22,5 @@ export { PlatformSettings, getPlatformSettings } from './PlatformSettings.js';
 export { RegistrationInvite } from './RegistrationInvite.js';
 export { AccessRequest } from './AccessRequest.js';
 export { Expense } from './Expense.js';
+export { ProjectBudgetPayment } from './ProjectBudgetPayment.js';
+export { ProjectRevenueEntry } from './ProjectRevenueEntry.js';

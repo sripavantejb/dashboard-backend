@@ -15,6 +15,7 @@ const querySchema = z.object({
   order: z.enum(['asc', 'desc']).optional(),
   status: z.enum(['paid', 'pending']).optional(),
   category: z.string().optional(),
+  projectId: z.string().optional(),
 });
 
 const createSchema = z.object({
@@ -26,6 +27,7 @@ const createSchema = z.object({
   status: z.enum(['paid', 'pending']).optional(),
   spentAt: z.string().optional(),
   notes: z.string().optional(),
+  projectId: z.string().optional(),
 });
 
 const updateSchema = createSchema.partial();
