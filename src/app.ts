@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import { env } from './config/env.js';
-import { createCorsOptions, parseCorsOrigins } from './config/cors.js';
+import { createCorsOptions } from './config/cors.js';
 import { errorHandler, notFoundHandler } from './shared/middleware/errorHandler.js';
 
 import authRoutes from './features/auth/routes/auth.routes.js';
@@ -32,7 +32,7 @@ import accessRequestRoutes from './features/access-requests/routes/access-reques
 const app = express();
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(cors(createCorsOptions(parseCorsOrigins(env.CORS_ORIGIN))));
+app.use(cors(createCorsOptions(env.CORS_ORIGIN)));
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));

@@ -1,5 +1,13 @@
 import type { CorsOptions } from 'cors';
 
+/** Always allowed — merged with CORS_ORIGIN env (comma-separated). */
+export const DEFAULT_CORS_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://dashboards.editcomedia.com',
+  'https://dashboards-frontend.vercel.app',
+];
+
 /** Parse comma-separated CORS_ORIGIN env value into a list of allowed origins. */
 export function parseCorsOrigins(value: string): string[] {
   return value
@@ -8,8 +16,17 @@ export function parseCorsOrigins(value: string): string[] {
     .filter(Boolean);
 }
 
-export function createCorsOptions(allowedOrigins: string[]): CorsOptions {
-  const origins = new Set(parseCorsOrigins(allowedOrigins.join(',')));
+export function getAllowedOrigins(corsOriginEnv: string): string[] {
+  return [...new Set([...DEFAULT_CORS_ORIGINS, ...parseCorsOrigins(corsOriginEnv)])];
+}
+
+/** Vercel preview URLs for the frontend project */
+function isVercelPreviewOrigin(origin: string): boolean {
+  return /^https:\/\/dashboards-frontend[a-z0-9-]*\.vercel\.app$/i.test(origin);
+}
+
+export function createCorsOptions(corsOriginEnv: string): CorsOptions {
+  const origins = new Set(getAllowedOrigins(corsOriginEnv));
 
   return {
     origin(origin, callback) {
@@ -18,8 +35,8 @@ export function createCorsOptions(allowedOrigins: string[]): CorsOptions {
         return;
       }
       const normalized = origin.replace(/\/$/, '');
-      if (origins.has(normalized)) {
-        callback(null, true);
+      if (origins.has(normalized) || isVercelPreviewOrigin(normalized)) {
+        callback(null, normalized);
         return;
       }
       callback(null, false);
@@ -27,5 +44,6 @@ export function createCorsOptions(allowedOrigins: string[]): CorsOptions {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
   };
 }
