@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import { env } from './config/env.js';
+import { connectDatabase, getDatabaseStatus } from './config/database.js';
 import { createCorsOptions } from './config/cors.js';
 import { errorHandler, notFoundHandler } from './shared/middleware/errorHandler.js';
 
@@ -39,6 +40,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use('/uploads', express.static(path.resolve(env.UPLOAD_DIR)));
 
+app.use(async (_req, _res, next) => {
+  try {
+    await connectDatabase();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
@@ -48,7 +58,13 @@ const limiter = rateLimit({
 app.use('/api', limiter);
 
 app.get('/api/health', (_req, res) => {
-  res.json({ success: true, message: 'Agency ERP API is running', version: '1.0.0' });
+  const database = getDatabaseStatus();
+  res.status(database === 'connected' ? 200 : 503).json({
+    success: database === 'connected',
+    message: 'Agency ERP API is running',
+    version: '1.0.0',
+    database,
+  });
 });
 
 const v1 = express.Router();
