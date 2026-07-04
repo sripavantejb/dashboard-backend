@@ -1,9 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
+import * as helmetImport from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
+import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import { env } from './config/env.js';
 import { errorHandler, notFoundHandler } from './shared/middleware/errorHandler.js';
@@ -28,6 +28,7 @@ import adminRoutes from './features/admin/routes/admin.routes.js';
 import activityRoutes from './features/activity/routes/activity.routes.js';
 
 const app = express();
+const helmet = helmetImport.default;
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
