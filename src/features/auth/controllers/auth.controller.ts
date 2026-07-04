@@ -2,6 +2,17 @@ import { Request, Response, NextFunction } from 'express';
 import { authService } from '../services/auth.service.js';
 import { AuthenticatedRequest } from '../../../shared/types/index.js';
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+function refreshCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
+}
+
 export class AuthController {
   async register(req: Request, res: Response, next: NextFunction) {
     try {
@@ -16,12 +27,7 @@ export class AuthController {
     try {
       const { email, password } = req.body;
       const result = await authService.companyLogin(email, password);
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      res.cookie('refreshToken', result.refreshToken, refreshCookieOptions());
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -32,12 +38,7 @@ export class AuthController {
     try {
       const { email, password } = req.body;
       const result = await authService.adminLogin(email, password);
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      res.cookie('refreshToken', result.refreshToken, refreshCookieOptions());
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -48,12 +49,7 @@ export class AuthController {
     try {
       const token = req.body.refreshToken || req.cookies?.refreshToken;
       const result = await authService.refresh(token);
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      res.cookie('refreshToken', result.refreshToken, refreshCookieOptions());
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -64,7 +60,7 @@ export class AuthController {
     try {
       const token = req.body.refreshToken || req.cookies?.refreshToken;
       if (token) await authService.logout(token);
-      res.clearCookie('refreshToken');
+      res.clearCookie('refreshToken', refreshCookieOptions());
       res.json({ success: true, message: 'Logged out successfully' });
     } catch (error) {
       next(error);
