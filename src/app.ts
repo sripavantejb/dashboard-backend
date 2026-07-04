@@ -40,6 +40,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use('/uploads', express.static(path.resolve(env.UPLOAD_DIR)));
 
+app.get('/api/health', (_req, res) => {
+  res.json({
+    success: true,
+    message: 'Agency ERP API is running',
+    version: '1.0.0',
+    database: getDatabaseStatus(),
+  });
+});
+
 app.use(async (_req, _res, next) => {
   try {
     await connectDatabase();
@@ -56,16 +65,6 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use('/api', limiter);
-
-app.get('/api/health', (_req, res) => {
-  const database = getDatabaseStatus();
-  res.status(database === 'connected' ? 200 : 503).json({
-    success: database === 'connected',
-    message: 'Agency ERP API is running',
-    version: '1.0.0',
-    database,
-  });
-});
 
 const v1 = express.Router();
 v1.use('/auth', authRoutes);

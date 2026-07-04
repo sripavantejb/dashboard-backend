@@ -19,6 +19,22 @@ export function errorHandler(
     });
   }
 
+  const isDbError =
+    err.name === 'MongoServerSelectionError' ||
+    err.name === 'MongoNetworkError' ||
+    err.message?.includes('MongoDB connection failed');
+
+  if (isDbError) {
+    logger.error('Database error', { error: err.message });
+    return res.status(503).json({
+      success: false,
+      error: {
+        message: 'Database unavailable. Check MONGODB_URI and Atlas network access.',
+        code: 'DATABASE_UNAVAILABLE',
+      },
+    });
+  }
+
   logger.error('Unhandled error', { error: err.message, stack: err.stack });
 
   return res.status(500).json({
