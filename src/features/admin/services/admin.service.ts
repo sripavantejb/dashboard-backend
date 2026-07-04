@@ -1,6 +1,6 @@
 import {
   Organization, User, AuditLog, LeadCategory, UserSession,
-  getPlatformSettings, RegistrationInvite,
+  getPlatformSettings, RegistrationInvite, AccessRequest,
 } from '../../../models/index.js';
 import type { IOrganization } from '../../../models/Organization.js';
 import { hashPassword } from '../../../shared/utils/jwt.js';
@@ -47,6 +47,7 @@ interface AdminPlatformStats {
   platformAdmins: number;
   totalSessions: number;
   totalTimeSeconds: number;
+  pendingAccessRequests: number;
   planBreakdown: Record<string, number>;
 }
 
@@ -70,7 +71,7 @@ export class AdminService {
       ? { _id: { $ne: platformOrg._id } }
       : {};
 
-    const [totalOrganizations, activeOrganizations, totalUsers, activeUsers, totalSessions, timeAgg] = await Promise.all([
+    const [totalOrganizations, activeOrganizations, totalUsers, activeUsers, totalSessions, timeAgg, pendingAccessRequests] = await Promise.all([
       Organization.countDocuments(tenantFilter),
       Organization.countDocuments({ ...tenantFilter, isActive: true }),
       User.countDocuments(platformOrg ? { organizationId: { $ne: platformOrg._id } } : {}),
@@ -79,6 +80,7 @@ export class AdminService {
       UserSession.aggregate([
         { $group: { _id: null, totalSeconds: { $sum: '$durationSeconds' } } },
       ]),
+      AccessRequest.countDocuments({ status: 'pending' }),
     ]);
 
     const platformAdmins = platformOrg
@@ -98,6 +100,7 @@ export class AdminService {
       platformAdmins,
       totalSessions,
       totalTimeSeconds: timeAgg[0]?.totalSeconds || 0,
+      pendingAccessRequests,
       planBreakdown: planBreakdown.reduce((acc, p) => {
         acc[p._id || 'starter'] = p.count;
         return acc;
@@ -394,6 +397,59 @@ export class AdminService {
     });
 
     return invite;
+  }
+
+  async listAccessRequests(status?: string) {
+    const filter = status && status !== 'all' ? { status } : {};
+    return AccessRequest.find(filter)
+      .populate('reviewedBy', 'firstName lastName email')
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
+  async updateAccessRequest(
+    adminUserId: string,
+    platformOrgId: string,
+    id: string,
+    data: { status?: string; adminNotes?: string }
+  ) {
+    const request = await AccessRequest.findById(id);
+    if (!request) throw new NotFoundError('Access request');
+
+    if (data.status) request.status = data.status as typeof request.status;
+    if (data.adminNotes !== undefined) request.adminNotes = data.adminNotes;
+    request.reviewedBy = adminUserId as unknown as typeof request.reviewedBy;
+    request.reviewedAt = new Date();
+    await request.save();
+
+    await AuditLog.create({
+      organizationId: platformOrgId,
+      userId: adminUserId,
+      action: 'update',
+      entityType: 'access_request',
+      entityId: id,
+      metadata: { status: data.status, email: request.email },
+    });
+
+    return AccessRequest.findById(id)
+      .populate('reviewedBy', 'firstName lastName email')
+      .lean();
+  }
+
+  async deleteAccessRequest(adminUserId: string, platformOrgId: string, id: string) {
+    const request = await AccessRequest.findByIdAndDelete(id);
+    if (!request) throw new NotFoundError('Access request');
+
+    await AuditLog.create({
+      organizationId: platformOrgId,
+      userId: adminUserId,
+      action: 'delete',
+      entityType: 'access_request',
+      entityId: id,
+      metadata: { email: request.email },
+    });
+
+    return request;
   }
 
   async revokeInvite(adminUserId: string, platformOrgId: string, id: string) {

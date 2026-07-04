@@ -26,6 +26,7 @@ import userRoutes from './features/users/routes/user.routes.js';
 import automationRoutes from './features/automation/routes/automation.routes.js';
 import adminRoutes from './features/admin/routes/admin.routes.js';
 import activityRoutes from './features/activity/routes/activity.routes.js';
+import accessRequestRoutes from './features/access-requests/routes/access-request.routes.js';
 
 const app = express();
 
@@ -68,6 +69,7 @@ v1.use('/users', userRoutes);
 v1.use('/automation', automationRoutes);
 v1.use('/admin', adminRoutes);
 v1.use('/activity', activityRoutes);
+v1.use('/access-requests', accessRequestRoutes);
 
 app.use('/api/v1', v1);
 app.use(notFoundHandler);

@@ -66,6 +66,11 @@ const updateCompanyUserSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const updateAccessRequestSchema = z.object({
+  status: z.enum(['pending', 'contacted', 'approved', 'rejected']).optional(),
+  adminNotes: z.string().max(2000).optional(),
+});
+
 router.get('/stats', adminController.getStats.bind(adminController));
 router.get('/organizations', adminController.listOrganizations.bind(adminController));
 router.get('/organizations/:id', adminController.getOrganization.bind(adminController));
@@ -84,5 +89,8 @@ router.patch('/settings', validateBody(settingsSchema), adminController.updateSe
 router.get('/invites', adminController.listInvites.bind(adminController));
 router.post('/invites', validateBody(createInviteSchema), adminController.createInvite.bind(adminController));
 router.delete('/invites/:id', adminController.revokeInvite.bind(adminController));
+router.get('/access-requests', adminController.listAccessRequests.bind(adminController));
+router.patch('/access-requests/:id', validateBody(updateAccessRequestSchema), adminController.updateAccessRequest.bind(adminController));
+router.delete('/access-requests/:id', adminController.deleteAccessRequest.bind(adminController));
 
 export default router;

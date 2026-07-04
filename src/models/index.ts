@@ -20,4 +20,5 @@ export { AutomationRule } from './AutomationRule.js';
 export { UserSession } from './UserSession.js';
 export { PlatformSettings, getPlatformSettings } from './PlatformSettings.js';
 export { RegistrationInvite } from './RegistrationInvite.js';
+export { AccessRequest } from './AccessRequest.js';
 export { Expense } from './Expense.js';

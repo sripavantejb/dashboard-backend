@@ -166,6 +166,44 @@ export class AdminController {
     }
   }
 
+  async listAccessRequests(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const requests = await adminService.listAccessRequests(req.query.status as string | undefined);
+      res.json({ success: true, data: requests });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateAccessRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const platformOrg = await adminService.getPlatformOrg();
+      if (!platformOrg) throw new NotFoundError('Platform organization');
+
+      const request = await adminService.updateAccessRequest(
+        req.user!.id,
+        platformOrg._id.toString(),
+        req.params.id as string,
+        req.body
+      );
+      res.json({ success: true, data: request });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deleteAccessRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const platformOrg = await adminService.getPlatformOrg();
+      if (!platformOrg) throw new NotFoundError('Platform organization');
+
+      await adminService.deleteAccessRequest(req.user!.id, platformOrg._id.toString(), req.params.id as string);
+      res.json({ success: true, message: 'Access request deleted' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getOrganization(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const org = await adminService.getOrganizationById(req.params.id as string);
