@@ -2,6 +2,7 @@ import {
   Organization, User, AuditLog, LeadCategory, UserSession,
   getPlatformSettings, RegistrationInvite,
 } from '../../../models/index.js';
+import type { IOrganization } from '../../../models/Organization.js';
 import { hashPassword } from '../../../shared/utils/jwt.js';
 import { ConflictError, NotFoundError, ForbiddenError } from '../../../shared/errors/index.js';
 import { ROLE_PERMISSIONS } from '../../../shared/types/index.js';
@@ -10,6 +11,44 @@ import { PLATFORM_ORG_SLUG } from '../../../shared/constants/platform.js';
 import { getMaxUsersForPlan, PLAN_CONFIG, type SubscriptionPlan } from '../../../shared/constants/plans.js';
 import { activityService } from '../../activity/services/activity.service.js';
 import crypto from 'crypto';
+
+interface AdminOrgAdminUser {
+  email: string;
+  firstName: string;
+  lastName: string;
+  lastLoginAt?: Date;
+}
+
+export interface AdminOrganizationListItem {
+  _id: unknown;
+  name: string;
+  slug: string;
+  logo?: string;
+  website?: string;
+  industry?: string;
+  subscriptionPlan: SubscriptionPlan;
+  maxUsers: number;
+  planStartedAt?: Date;
+  planExpiresAt?: Date;
+  settings: IOrganization['settings'];
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  userCount: number;
+  adminUser: AdminOrgAdminUser | null;
+  totalTimeSeconds: number;
+}
+
+interface AdminPlatformStats {
+  totalOrganizations: number;
+  activeOrganizations: number;
+  totalUsers: number;
+  activeUsers: number;
+  platformAdmins: number;
+  totalSessions: number;
+  totalTimeSeconds: number;
+  planBreakdown: Record<string, number>;
+}
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -25,7 +64,7 @@ export class AdminService {
     return Organization.findOne({ slug: PLATFORM_ORG_SLUG });
   }
 
-  async getStats() {
+  async getStats(): Promise<AdminPlatformStats> {
     const platformOrg = await this.getPlatformOrg();
     const tenantFilter = platformOrg
       ? { _id: { $ne: platformOrg._id } }
@@ -66,13 +105,13 @@ export class AdminService {
     };
   }
 
-  async listOrganizations() {
+  async listOrganizations(): Promise<AdminOrganizationListItem[]> {
     const platformOrg = await this.getPlatformOrg();
     const filter = platformOrg ? { _id: { $ne: platformOrg._id } } : {};
 
     const orgs = await Organization.find(filter).sort({ createdAt: -1 }).lean();
-    const enriched = await Promise.all(
-      orgs.map(async (org) => {
+    return Promise.all(
+      orgs.map(async (org): Promise<AdminOrganizationListItem> => {
         const [userCount, adminUser, totalTime] = await Promise.all([
           User.countDocuments({ organizationId: org._id, isActive: true }),
           User.findOne({ organizationId: org._id, role: 'admin' }).select('email firstName lastName lastLoginAt').lean(),
@@ -82,14 +121,33 @@ export class AdminService {
           ]),
         ]);
         return {
-          ...org,
+          _id: org._id,
+          name: org.name,
+          slug: org.slug,
+          logo: org.logo,
+          website: org.website,
+          industry: org.industry,
+          subscriptionPlan: org.subscriptionPlan,
+          maxUsers: org.maxUsers,
+          planStartedAt: org.planStartedAt,
+          planExpiresAt: org.planExpiresAt,
+          settings: org.settings,
+          isActive: org.isActive,
+          createdAt: org.createdAt,
+          updatedAt: org.updatedAt,
           userCount,
-          adminUser,
+          adminUser: adminUser
+            ? {
+                email: adminUser.email,
+                firstName: adminUser.firstName,
+                lastName: adminUser.lastName,
+                lastLoginAt: adminUser.lastLoginAt,
+              }
+            : null,
           totalTimeSeconds: totalTime[0]?.totalSeconds || 0,
         };
       })
     );
-    return enriched;
   }
 
   async createOrganization(
