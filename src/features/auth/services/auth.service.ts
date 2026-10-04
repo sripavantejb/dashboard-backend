@@ -95,7 +95,7 @@ export class AuthService {
   }
 
   async companyLogin(email: string, password: string) {
-    const user = await User.findOne({ email, isActive: true }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase().trim(), isActive: true }).select('+password');
     if (!user) throw new UnauthorizedError('Invalid email or password');
     if (user.role === 'super_admin') {
       throw new ForbiddenError('Super admin must sign in at /admin/login');
@@ -118,7 +118,7 @@ export class AuthService {
   }
 
   async adminLogin(email: string, password: string) {
-    const user = await User.findOne({ email, isActive: true }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase().trim(), isActive: true }).select('+password');
     if (!user) throw new UnauthorizedError('Invalid email or password');
     if (user.role !== 'super_admin') {
       throw new ForbiddenError('Super admin access only. Company users should use the main login.');
