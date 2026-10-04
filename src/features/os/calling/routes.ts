@@ -3,9 +3,47 @@ import { z } from 'zod';
 import { SalesActivityEvent, SalesCall, SalesFollowUp, SalesLead, SalesPhoneLink } from '../../../models/index.js';
 import { SALES_CALL_FORM_OUTCOMES } from '../../../shared/constants/os.js';
 import { NotFoundError, ValidationError } from '../../../shared/errors/index.js';
+import { actorFrom, logActivity, notifyStaff } from '../../../shared/os/activity.js';
 import type { AuthenticatedRequest } from '../../../shared/types/index.js';
 import { isObjectId, parseBody, route } from '../../../shared/utils/crud.js';
 import { getCallProvider } from './provider.js';
+
+async function mirrorCallActivity(
+  req: AuthenticatedRequest,
+  input: { type: string; title: string; leadId?: unknown; callId: string; metadata?: Record<string, unknown> }
+) {
+  const sales = salesOf(req);
+  const organizationId = req.user!.organizationId;
+  await SalesActivityEvent.create({
+    organizationId,
+    type: input.type,
+    title: input.title,
+    actorEmployeeId: sales.employeeId,
+    actorName: sales.name,
+    leadId: input.leadId,
+    metadata: { callId: input.callId, ...input.metadata },
+    createdBy: req.user!.email,
+  });
+  await logActivity(actorFrom(req.user!), {
+    title: `BDA · ${input.title}`,
+    detail: sales.name,
+    entityType: 'sales_call',
+    entityId: input.callId,
+    actionType: input.type,
+    leadId: input.leadId ? String(input.leadId) : undefined,
+    metadata: { callId: input.callId, source: 'bda', ...input.metadata },
+  });
+  await notifyStaff(organizationId, {
+    type: 'sales_activity',
+    title: `BDA · ${input.title}`,
+    body: sales.name,
+    href: '/activity',
+    entityType: 'sales_call',
+    entityId: input.callId,
+    recipientRoles: ['admin'],
+    excludeUserId: req.user!.id,
+  });
+}
 
 const PENDING_MS = 10 * 60_000;
 
@@ -165,15 +203,12 @@ callingRoutes.post('/sessions', route(async (req, res) => {
     updatedBy: req.user!.email,
   });
 
-  await SalesActivityEvent.create({
-    organizationId,
+  await mirrorCallActivity(req as AuthenticatedRequest, {
     type: 'call_started',
     title: `Call started with ${lead.contactPerson}`,
-    actorEmployeeId: sales.employeeId,
-    actorName: sales.name,
     leadId: lead._id,
-    metadata: { callId: String(call._id), channel, provider: plan.provider },
-    createdBy: req.user!.email,
+    callId: String(call._id),
+    metadata: { channel, provider: plan.provider },
   });
 
   res.status(201);
@@ -319,15 +354,12 @@ callingRoutes.post('/sessions/:id/outcome', route(async (req, res) => {
     });
   }
 
-  await SalesActivityEvent.create({
-    organizationId,
+  await mirrorCallActivity(req as AuthenticatedRequest, {
     type: 'call_logged',
     title: `Call logged (${body.outcome.replace(/_/g, ' ')})`,
-    actorEmployeeId: sales.employeeId,
-    actorName: sales.name,
     leadId: call.leadId,
-    metadata: { callId: String(call._id), outcome: body.outcome },
-    createdBy: req.user!.email,
+    callId: String(call._id),
+    metadata: { outcome: body.outcome },
   });
 
   res.status(201);

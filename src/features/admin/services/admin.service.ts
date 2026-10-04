@@ -9,6 +9,9 @@ import { ROLE_PERMISSIONS } from '../../../shared/types/index.js';
 import type { UserRole } from '../../../shared/types/index.js';
 import { PLATFORM_ORG_SLUG } from '../../../shared/constants/platform.js';
 import { getMaxUsersForPlan, PLAN_CONFIG, type SubscriptionPlan } from '../../../shared/constants/plans.js';
+import { assertOrgSlug, normalizeOrgSlug } from '../../../shared/constants/slugs.js';
+import { ensureSalesEmployeeForUser } from '../../os/services/sales-employee.service.js';
+import { runWithOrganization } from '../../../config/tenant.js';
 import { activityService } from '../../activity/services/activity.service.js';
 import crypto from 'crypto';
 
@@ -52,7 +55,7 @@ interface AdminPlatformStats {
 }
 
 function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  return normalizeOrgSlug(text);
 }
 
 const DEFAULT_CATEGORIES = [
@@ -158,6 +161,7 @@ export class AdminService {
     platformOrgId: string,
     data: {
       name: string;
+      slug?: string;
       industry?: string;
       website?: string;
       logo?: string;
@@ -173,9 +177,12 @@ export class AdminService {
 
     const plan = data.plan || 'starter';
     const maxUsers = getMaxUsersForPlan(plan);
-    let slug = slugify(data.name);
+    let slug = assertOrgSlug(data.slug?.trim() || slugify(data.name));
     const slugExists = await Organization.findOne({ slug });
-    if (slugExists) slug = `${slug}-${Date.now()}`;
+    if (slugExists) {
+      if (data.slug?.trim()) throw new ConflictError('Slug is already taken');
+      slug = assertOrgSlug(`${slug}-${Date.now().toString(36)}`);
+    }
 
     const planExpiresAt = new Date();
     planExpiresAt.setFullYear(planExpiresAt.getFullYear() + 1);
@@ -237,6 +244,7 @@ export class AdminService {
   async updateOrganization(platformOrgId: string, adminUserId: string, id: string, data: {
     isActive?: boolean;
     name?: string;
+    slug?: string;
     subscriptionPlan?: SubscriptionPlan;
     maxUsers?: number;
     planExpiresAt?: string;
@@ -247,6 +255,12 @@ export class AdminService {
     }
     if (data.planExpiresAt) {
       updates.planExpiresAt = new Date(data.planExpiresAt);
+    }
+    if (data.slug !== undefined) {
+      const slug = assertOrgSlug(data.slug);
+      const taken = await Organization.findOne({ slug, _id: { $ne: id } });
+      if (taken) throw new ConflictError('Slug is already taken');
+      updates.slug = slug;
     }
 
     const org = await Organization.findByIdAndUpdate(id, updates, { new: true });
@@ -527,6 +541,18 @@ export class AdminService {
       permissions: ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.sales,
     });
 
+    if (role === 'sales' || role === 'admin') {
+      await runWithOrganization(organizationId, () =>
+        ensureSalesEmployeeForUser({
+          organizationId,
+          userId: String(user._id),
+          email: user.email,
+          isSalesAdmin: role === 'admin',
+          department: data.department,
+        })
+      );
+    }
+
     await AuditLog.create({
       organizationId: platformOrgId,
       userId: adminUserId,
@@ -574,6 +600,18 @@ export class AdminService {
     ).select('-password');
 
     if (!user) throw new NotFoundError('User');
+
+    if (user.role === 'sales' || user.role === 'admin') {
+      await runWithOrganization(organizationId, () =>
+        ensureSalesEmployeeForUser({
+          organizationId,
+          userId: String(user._id),
+          email: user.email,
+          isSalesAdmin: user.role === 'admin',
+          department: user.department,
+        })
+      );
+    }
 
     await AuditLog.create({
       organizationId: platformOrgId,

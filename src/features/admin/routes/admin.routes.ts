@@ -19,6 +19,7 @@ const planEnum = z.enum(['starter', 'professional', 'enterprise']);
 
 const createOrgSchema = z.object({
   name: z.string().min(1).max(200),
+  slug: z.string().min(2).max(64).optional(),
   industry: z.string().optional(),
   website: z.string().optional(),
   plan: planEnum.optional(),
@@ -32,6 +33,7 @@ const createOrgSchema = z.object({
 const updateOrgSchema = z.object({
   isActive: z.boolean().optional(),
   name: z.string().min(1).optional(),
+  slug: z.string().min(2).max(64).optional(),
   subscriptionPlan: planEnum.optional(),
   maxUsers: z.number().min(1).optional(),
   planExpiresAt: z.string().datetime().optional(),

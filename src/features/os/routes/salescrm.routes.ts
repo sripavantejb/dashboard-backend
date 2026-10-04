@@ -8,7 +8,7 @@ import {
 } from '../../../models/index.js';
 import { authenticate } from '../../../shared/middleware/auth.js';
 import { route, parseBody, oid, isObjectId, escapeRegex } from '../../../shared/utils/crud.js';
-import { notifyStaff, writeAudit, actorFrom } from '../../../shared/os/activity.js';
+import { notifyStaff, writeAudit, actorFrom, logActivity } from '../../../shared/os/activity.js';
 import { ForbiddenError, NotFoundError, ValidationError, ConflictError } from '../../../shared/errors/index.js';
 import { permissionsAllow, type AuthenticatedRequest } from '../../../shared/types/index.js';
 import { hashPassword } from '../../../shared/utils/jwt.js';
@@ -88,12 +88,53 @@ const needAdmin = (req: SalesRequest, _res: Response, next: NextFunction) =>
 const ctx = (req: AuthenticatedRequest) => (req as SalesRequest).sales!;
 const orgOf = (req: AuthenticatedRequest) => req.user!.organizationId;
 
+function salesEntityType(type: string): string {
+  if (type.startsWith('lead_')) return 'sales_lead';
+  if (type.startsWith('deal_')) return 'sales_deal';
+  if (type.startsWith('call_')) return 'sales_call';
+  if (type.startsWith('meeting_')) return 'sales_meeting';
+  if (type.startsWith('followup_')) return 'sales_followup';
+  if (type.startsWith('quotation_')) return 'sales_quotation';
+  if (type.startsWith('proposal_')) return 'sales_proposal';
+  if (type.startsWith('task_')) return 'sales_task';
+  if (type.startsWith('employee_') || type === 'permission_changed') return 'sales_employee';
+  if (type.startsWith('approval_') || type === 'escalation') return 'sales_approval';
+  if (type.includes('email') || type.includes('whatsapp')) return 'sales_message';
+  return 'sales';
+}
+
 async function logSales(req: AuthenticatedRequest, type: string, title: string, extra: { detail?: string; leadId?: unknown; dealId?: unknown; metadata?: Record<string, unknown> } = {}) {
   const s = ctx(req);
+  const organizationId = orgOf(req);
+  const entityType = salesEntityType(type);
+  const entityId = String(extra.leadId || extra.dealId || extra.metadata?.employeeId || extra.metadata?.callId || '');
   await SalesActivityEvent.create({
-    organizationId: orgOf(req), type, title, detail: extra.detail || '', actorEmployeeId: s.employeeId, actorName: s.name,
+    organizationId, type, title, detail: extra.detail || '', actorEmployeeId: s.employeeId, actorName: s.name,
     leadId: extra.leadId, dealId: extra.dealId, metadata: extra.metadata || {}, createdBy: req.user!.email,
   });
+  // Mirror into company Activity so admins see BDA work on /activity.
+  await logActivity(actorFrom(req.user!), {
+    title: `BDA · ${title}`,
+    detail: extra.detail || s.name,
+    entityType,
+    entityId: entityId || undefined,
+    actionType: type,
+    leadId: extra.leadId ? String(extra.leadId) : undefined,
+    metadata: { ...extra.metadata, salesType: type, actorEmployeeId: s.employeeId, source: 'bda' },
+  });
+  // Quiet internal chatter (attendance / daily status) stays off the admin inbox.
+  if (!['attendance_check_in', 'daily_work_status'].includes(type)) {
+    await notifyStaff(organizationId, {
+      type: 'sales_activity',
+      title: `BDA · ${title}`,
+      body: extra.detail || `${s.name} updated Sales CRM`,
+      href: '/activity',
+      entityType,
+      entityId: entityId || undefined,
+      recipientRoles: ['admin'],
+      excludeUserId: req.user!.id,
+    });
+  }
 }
 
 /** Employees only see their own records; sales admins see everything. */

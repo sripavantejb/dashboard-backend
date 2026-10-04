@@ -1,13 +1,24 @@
-import { Types } from 'mongoose';
-import { User, Organization, RefreshToken, RegistrationInvite, getPlatformSettings } from '../../../models/index.js';
+import { User, Organization, RefreshToken, RegistrationInvite, SalesEmployee, getPlatformSettings } from '../../../models/index.js';
+import { runWithOrganization } from '../../../config/tenant.js';
 import { hashPassword, comparePassword, signAccessToken, signRefreshToken } from '../../../shared/utils/jwt.js';
 import { ConflictError, UnauthorizedError, NotFoundError, ForbiddenError } from '../../../shared/errors/index.js';
 import { permissionsForRole } from '../../../shared/types/index.js';
 import type { UserRole } from '../../../shared/types/index.js';
 import { getMaxUsersForPlan } from '../../../shared/constants/plans.js';
+import { normalizeOrgSlug } from '../../../shared/constants/slugs.js';
 
 function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  return normalizeOrgSlug(text);
+}
+
+async function isBdaOnlySalesUser(organizationId: string, userId: string, role: string): Promise<boolean> {
+  if (role !== 'sales') return false;
+  const employee = await runWithOrganization(organizationId, () =>
+    SalesEmployee.findOne({ organizationId, userId, recordStatus: { $ne: 'archived' } }).select('isSalesAdmin').lean()
+  );
+  // No SalesEmployee yet → treat as BDA (provisioned on first portal hit).
+  if (!employee) return true;
+  return !employee.isSalesAdmin;
 }
 
 export class AuthService {
@@ -94,6 +105,42 @@ export class AuthService {
     return { user: this.sanitizeUser(user), organization: this.sessionOrganization(organization), ...tokens };
   }
 
+  async getBdaBranding(orgSlug: string) {
+    const slug = normalizeOrgSlug(orgSlug);
+    const org = await Organization.findOne({ slug, isActive: true }).select('name slug logo').lean();
+    if (!org) throw new NotFoundError('Organization');
+    return { name: org.name, slug: org.slug, logo: org.logo || '' };
+  }
+
+  async bdaLogin(orgSlug: string, email: string, password: string) {
+    const slug = normalizeOrgSlug(orgSlug);
+    const organization = await Organization.findOne({ slug, isActive: true });
+    if (!organization) throw new UnauthorizedError('Invalid email or password');
+
+    const user = await User.findOne({
+      email: email.toLowerCase().trim(),
+      organizationId: organization._id,
+      isActive: true,
+    }).select('+password');
+    if (!user) throw new UnauthorizedError('Invalid email or password');
+
+    const valid = await comparePassword(password, user.password);
+    if (!valid) throw new UnauthorizedError('Invalid email or password');
+
+    if (user.role === 'super_admin') {
+      throw new ForbiddenError('Super admin must sign in at /platform-admin/login');
+    }
+    if (!(await isBdaOnlySalesUser(String(organization._id), String(user._id), user.role))) {
+      throw new ForbiddenError('Use the company login at /login for this account');
+    }
+
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    const tokens = await this.generateTokens(user);
+    return { user: this.sanitizeUser(user), organization: this.sessionOrganization(organization), ...tokens };
+  }
+
   async companyLogin(email: string, password: string) {
     const user = await User.findOne({ email: email.toLowerCase().trim(), isActive: true }).select('+password');
     if (!user) throw new UnauthorizedError('Invalid email or password');
@@ -108,6 +155,10 @@ export class AuthService {
     if (!organization) throw new UnauthorizedError('Organization not found');
     if (!organization.isActive) {
       throw new UnauthorizedError('Organization account is suspended');
+    }
+
+    if (await isBdaOnlySalesUser(String(organization._id), String(user._id), user.role)) {
+      throw new ForbiddenError(`BDA accounts sign in at /${organization.slug}/bda`);
     }
 
     user.lastLoginAt = new Date();

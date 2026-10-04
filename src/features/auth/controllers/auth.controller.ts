@@ -34,6 +34,26 @@ export class AuthController {
     }
   }
 
+  async getBdaBranding(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await authService.getBdaBranding(String(req.params.orgSlug || ''));
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async bdaLogin(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { email, password } = req.body;
+      const result = await authService.bdaLogin(String(req.params.orgSlug || ''), email, password);
+      res.cookie('refreshToken', result.refreshToken, refreshCookieOptions());
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async adminLogin(req: Request, res: Response, next: NextFunction) {
     try {
       const { email, password } = req.body;

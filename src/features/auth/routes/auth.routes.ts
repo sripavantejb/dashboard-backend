@@ -9,6 +9,8 @@ const router = Router();
 router.post('/register', validateBody(registerSchema), authController.register.bind(authController));
 router.get('/settings/public', authController.getPublicSettings.bind(authController));
 router.get('/invite/:token', authController.validateInvite.bind(authController));
+router.get('/bda/:orgSlug', authController.getBdaBranding.bind(authController));
+router.post('/bda/:orgSlug/login', validateBody(loginSchema), authController.bdaLogin.bind(authController));
 router.post('/login', validateBody(loginSchema), authController.login.bind(authController));
 router.post('/admin/login', validateBody(loginSchema), authController.adminLogin.bind(authController));
 router.post('/refresh', authController.refresh.bind(authController));
