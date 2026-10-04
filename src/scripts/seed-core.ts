@@ -1,4 +1,4 @@
-import { Organization, User, LeadCategory, Lead, Task, Project, Invoice, CallLog, FollowUp, Proposal } from '../models/index.js';
+import { Organization, User, LeadCategory, Lead, Task, Project, Invoice, CallLog, FollowUp, Proposal, SalesEmployee } from '../models/index.js';
 import { AutomationRule } from '../models/AutomationRule.js';
 import { hashPassword } from '../shared/utils/jwt.js';
 import { ROLE_PERMISSIONS } from '../shared/types/index.js';
@@ -94,6 +94,17 @@ export async function seedDatabase({ demo = process.env.SEED_DEMO === 'true', qu
     firstName: 'Raj',
     lastName: 'Kumar',
     role: 'sales',
+  });
+
+  await SalesEmployee.create({
+    organizationId: org._id,
+    userId: salesUser._id,
+    isSalesAdmin: false,
+    employeeCode: 'SE-0001',
+    department: 'Sales',
+    status: 'active',
+    createdBy: ADMIN.email,
+    updatedBy: ADMIN.email,
   });
 
   const categories = [];

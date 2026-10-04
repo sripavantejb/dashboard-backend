@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Model } from 'mongoose';
 import {
   SalesEmployee, SalesLead, SalesDeal, SalesCustomer, SalesCall, SalesMeeting, SalesFollowUp, SalesQuotation,
-  SalesProposal, SalesTask, SalesTarget, SalesTerritory, SalesApproval, SalesAttendance, SalesWorkStatus,
+  SalesProposal, SalesTask, SalesTarget, SalesStageTarget, SalesTerritory, SalesApproval, SalesAttendance, SalesWorkStatus,
   SalesActivityEvent, SalesMessage, User, EGAApplication, nextSequence,
 } from '../../../models/index.js';
 import { authenticate } from '../../../shared/middleware/auth.js';
@@ -1166,6 +1166,89 @@ salesCrmRoutes.delete('/targets/:id', needAdmin as never, route(async (req) => {
   const t = await SalesTarget.findOneAndDelete({ _id: req.params.id, organizationId: orgOf(req) });
   if (!t) throw new NotFoundError('Target');
   return { id: String(t._id) };
+}));
+
+function currentMonthBounds(now = new Date()) {
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { periodStart, periodEnd };
+}
+
+async function stageTargetRows(organizationId: string, employeeId?: string) {
+  const org = organizationId;
+  const { periodStart, periodEnd } = currentMonthBounds();
+  const employees = await SalesEmployee.find({
+    organizationId: org,
+    status: 'active',
+    isSalesAdmin: false,
+    recordStatus: { $ne: 'archived' },
+    ...(employeeId && isObjectId(employeeId) ? { _id: employeeId } : {}),
+  }).lean();
+  const names = await employeeNames(org, employees);
+  const targets = await SalesStageTarget.find({
+    organizationId: org,
+    recordStatus: 'active',
+    periodStart,
+    employeeId: { $in: employees.map((e) => e._id) },
+  }).lean();
+  const byEmployee = new Map(targets.map((t) => [String(t.employeeId), t]));
+  const leads = await SalesLead.find({
+    organizationId: org,
+    recordStatus: 'active',
+    assignedEmployeeId: { $in: employees.map((e) => e._id) },
+    createdAt: { $gte: periodStart, $lte: periodEnd },
+  }).select('status assignedEmployeeId').lean();
+
+  return employees.map((e) => {
+    const id = String(e._id);
+    const target = byEmployee.get(id);
+    const mine = leads.filter((l) => String(l.assignedEmployeeId) === id);
+    const actual = Object.fromEntries(SALES_LEAD_STATUSES.map((st) => [st, mine.filter((l) => l.status === st).length]));
+    const stages = Object.fromEntries(SALES_LEAD_STATUSES.map((st) => [st, Number((target?.stages as Record<string, number> | undefined)?.[st] || 0)]));
+    return {
+      employeeId: id,
+      name: names.get(id)?.name || e.employeeCode,
+      employeeCode: e.employeeCode,
+      periodStart,
+      periodEnd,
+      stages,
+      actual,
+      targetId: target ? String(target._id) : null,
+    };
+  });
+}
+
+salesCrmRoutes.get('/stage-targets', route(async (req) => {
+  const s = ctx(req);
+  if (!s.isSalesAdmin) {
+    return stageTargetRows(orgOf(req), s.employeeId);
+  }
+  return stageTargetRows(orgOf(req));
+}));
+
+salesCrmRoutes.put('/stage-targets', needAdmin as never, route(async (req) => {
+  const b = parseBody<{ employeeId: string; stages?: Record<string, unknown> }>(
+    z.object({
+      employeeId: z.string().min(1),
+      stages: z.record(z.union([z.number(), z.string()])).optional(),
+    }),
+    req.body
+  );
+  if (!(await SalesEmployee.exists({ _id: b.employeeId, organizationId: orgOf(req), isSalesAdmin: false }))) {
+    throw new ValidationError('Choose a BDA / sales employee');
+  }
+  const { periodStart, periodEnd } = currentMonthBounds();
+  const stages = Object.fromEntries(
+    SALES_LEAD_STATUSES.map((st) => [st, Math.max(0, Math.floor(Number(b.stages?.[st] ?? 0) || 0))])
+  );
+  return SalesStageTarget.findOneAndUpdate(
+    { organizationId: orgOf(req), employeeId: b.employeeId, periodStart },
+    {
+      $set: { stages, periodEnd, updatedBy: req.user!.email, recordStatus: 'active' },
+      $setOnInsert: { createdBy: req.user!.email },
+    },
+    { upsert: true, new: true }
+  );
 }));
 
 salesCrmRoutes.get('/territories', route(async (req) => SalesTerritory.find({ organizationId: orgOf(req), recordStatus: 'active' }).sort({ name: 1 }).lean()));

@@ -7,7 +7,11 @@ import { encryptData, maskMongoUri } from '../../../shared/utils/crypto.js';
 import { databaseUsage, forgetUsage } from '../services/usage.service.js';
 import { connectionForOrganization, invalidateOrganizationConnection, testMongoConnection, tenantDatabaseStatus } from '../../../config/tenant.js';
 
-/** Mounted under `/admin/organizations/:id/database` (super admin only). The URI is write-only. */
+/**
+ * Mounted under `/admin/organizations/:id/database` — platform super_admin only.
+ * Company admins have no API or UI to attach a dedicated MongoDB; business data stays on the
+ * shared platform database until a platform admin connects one here. The URI is write-only.
+ */
 export const organizationDatabaseRoutes = Router({ mergeParams: true });
 
 const uriSchema = z.object({

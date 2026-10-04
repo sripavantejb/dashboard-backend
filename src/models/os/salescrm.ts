@@ -221,6 +221,16 @@ const targetSchema = osSchema({
 });
 export const SalesTarget = osModel('SalesTarget', targetSchema);
 
+/** Per-BDA monthly targets for each Sales CRM lead pipeline stage (set by company admins). */
+const stageTargetSchema = osSchema({
+  employeeId: ref('SalesEmployee', { required: true, index: true }),
+  periodStart: { type: Date, required: true },
+  periodEnd: { type: Date, required: true },
+  stages: { type: Object, default: {} },
+});
+stageTargetSchema.index({ organizationId: 1, employeeId: 1, periodStart: 1 }, { unique: true });
+export const SalesStageTarget = osModel('SalesStageTarget', stageTargetSchema);
+
 const territorySchema = osSchema({
   name: { type: String, required: true, trim: true },
   type: oneOf(SALES_TERRITORY_TYPES, 'custom'),

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   Lead, Conversion, Vendor, Project, ProjectMember, Task, Invoice, Meeting, FollowUp, Transaction, TrackerRow,
-  RecurringPayment, ActivityEvent, Notification, User, SalesCustomer, Referrer, ServiceCatalog, IndustryCatalog,
+  RecurringPayment, ActivityEvent, Notification, User, SalesCustomer, SalesLead, SalesDeal, Referrer, ServiceCatalog, IndustryCatalog,
 } from '../../../models/index.js';
 import { authenticate, authorize } from '../../../shared/middleware/auth.js';
 import { crudRouter, route, oid, escapeRegex, type CrudContext } from '../../../shared/utils/crud.js';
@@ -12,6 +12,7 @@ import { permissionsAllow } from '../../../shared/types/index.js';
 import { withDisplayStatus, displayInvoiceStatus, outstandingOf } from '../../../shared/os/money.js';
 import {
   ACTIVE_PROJECT_STATUSES, TRACKER_DONE_STATUSES, DEFAULT_SERVICES, DEFAULT_INDUSTRIES, normalizeProjectStatus,
+  SALES_LEAD_STATUSES, SALES_DEAL_STAGES,
 } from '../../../shared/constants/os.js';
 import { LEAD_STATUSES } from '../../../models/Lead.js';
 import { sendNotificationEmail } from '../../../shared/utils/mailer.js';
@@ -42,7 +43,7 @@ overviewRoutes.get(
     const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
     const open = { $nin: ['completed', 'cancelled'] };
 
-    const [leads, conversions, vendors, projects, tasks, invoices, meetings, followUps, transactions, trackerRows, myMemberships, salesCustomers, referrerCount, staff, unread] =
+    const [leads, conversions, vendors, projects, tasks, invoices, meetings, followUps, transactions, trackerRows, myMemberships, salesCustomerRows, salesLeads, salesDeals, referrerCount, staff, unread] =
       await Promise.all([
         Lead.find({ organizationId: org, isArchived: { $ne: true } }).select('status estimatedValue').lean(),
         Conversion.countDocuments({ organizationId: org }),
@@ -56,15 +57,39 @@ overviewRoutes.get(
         Transaction.find({ organizationId: org, recordStatus: 'active' }).select('type amount date').lean(),
         TrackerRow.find({ organizationId: org, recordStatus: 'active' }).select('poc dependency status projectName taskName date').sort({ date: -1 }).lean(),
         ProjectMember.find({ organizationId: org, userId: me }).select('projectId').lean(),
-        SalesCustomer.countDocuments({ organizationId: org, recordStatus: 'active' }),
+        SalesCustomer.find({ organizationId: org, recordStatus: 'active' }).select('customerSince totalRevenue').lean(),
+        SalesLead.find({ organizationId: org, recordStatus: 'active' }).select('status').lean(),
+        SalesDeal.find({ organizationId: org, recordStatus: 'active' }).select('stage value').lean(),
         Referrer.countDocuments({ organizationId: org }),
         canSeeAll ? User.find({ organizationId: org, isActive: true }).select('firstName lastName email role').lean() : [],
         Notification.countDocuments({ organizationId: org, userId: me, readAt: null }),
       ]);
 
-    const openLeads = leads.filter((l) => !['converted', 'lost'].includes(l.status));
-    const pipelineValue = openLeads.reduce((s, l) => s + (l.estimatedValue || 0), 0);
-    const salesCounts = Object.fromEntries(LEAD_STATUSES.map((s) => [s, leads.filter((l) => l.status === s).length]));
+    const salesCustomers = salesCustomerRows.length;
+    const openLeads = [...leads, ...salesLeads].filter((l) => !['converted', 'lost'].includes(l.status));
+    const openDeals = salesDeals.filter((d) => !['won', 'lost'].includes(d.stage));
+    const pipelineValue =
+      leads.filter((l) => !['converted', 'lost'].includes(l.status)).reduce((s, l) => s + (l.estimatedValue || 0), 0)
+      + openDeals.reduce((s, d) => s + (d.value || 0), 0);
+    const bump = (map: Record<string, number>, key: string, n = 1) => {
+      map[key] = (map[key] || 0) + n;
+    };
+    const leadCounts: Record<string, number> = Object.fromEntries(SALES_LEAD_STATUSES.map((s) => [s, 0]));
+    for (const l of leads) bump(leadCounts, l.status);
+    for (const l of salesLeads) bump(leadCounts, l.status);
+    const dealCounts: Record<string, number> = Object.fromEntries(SALES_DEAL_STAGES.map((s) => [s, 0]));
+    for (const d of salesDeals) bump(dealCounts, d.stage);
+    const newCustomers = salesCustomerRows.filter((c) => c.customerSince && c.customerSince >= monthStart).length;
+    const customerCounts: Record<string, number> = {
+      this_month: newCustomers,
+      active: Math.max(0, salesCustomers - newCustomers),
+    };
+    const combined: Record<string, number> = {};
+    for (const [k, v] of Object.entries(leadCounts)) bump(combined, k, v);
+    for (const [k, v] of Object.entries(dealCounts)) bump(combined, k, v);
+    bump(combined, 'customers', salesCustomers);
+    const converted = (leadCounts.converted || 0) + conversions + (dealCounts.won || 0);
+    const funnelSize = leads.length + salesLeads.length + salesDeals.length || 1;
     const activeProjects = projects.filter((p) => ACTIVE_PROJECT_STATUSES.includes(normalizeProjectStatus(p.status)));
     const dueSoon = activeProjects.filter((p) => p.expectedDelivery && +p.expectedDelivery >= +now && +p.expectedDelivery <= +now + 7 * DAY);
 
@@ -115,7 +140,20 @@ overviewRoutes.get(
       myProjects: { owned: owned.length, working: working.length, list: working.slice(0, 8).map((p) => ({ id: String(p._id), name: p.name || 'Untitled project' })) },
       workload,
       kpis: { received, activeClients: vendors, activeProjects: activeProjects.length, openLeads: openLeads.length, pipelineValue, outstanding: Math.max(0, invoiced - received) },
-      pipeline: { counts: salesCounts, conversionRate: leads.length ? Math.round((conversions / leads.length) * 100) : 0 },
+      pipeline: {
+        counts: combined,
+        conversionRate: Math.round((converted / funnelSize) * 100),
+        leads: leadCounts,
+        deals: dealCounts,
+        customers: customerCounts,
+        totals: {
+          leads: leads.length + salesLeads.length,
+          deals: salesDeals.length,
+          customers: salesCustomers,
+          dealValue: openDeals.reduce((s, d) => s + (d.value || 0), 0),
+          customerRevenue: salesCustomerRows.reduce((s, c) => s + (c.totalRevenue || 0), 0),
+        },
+      },
       operations: { dueSoon: dueSoon.length, meetings },
       finance: { invoiced, collected: received, outstanding: Math.max(0, invoiced - received), overdue: overdueAmount, monthPaid, quarterPaid, otherIncome, totalSpent, monthSpent, net: received + otherIncome - totalSpent },
       attention: {

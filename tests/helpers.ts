@@ -52,7 +52,10 @@ export class Api {
   }
 
   async login(who: keyof typeof CREDS) {
-    const path = who === 'super' ? '/auth/admin/login' : '/auth/login';
+    const path =
+      who === 'super' ? '/auth/admin/login'
+        : who === 'sales' ? `/auth/bda/${ORG_SLUG}/login`
+          : '/auth/login';
     const data = await this.ok(this.anon().post<{ accessToken: string }>(path, CREDS[who]));
     return this.as(data.accessToken);
   }
