@@ -11,7 +11,7 @@ beforeAll(async () => {
 afterAll(() => t?.close());
 
 describe('BDA pipeline stage targets', () => {
-  it('lets company admins set per-BDA stage targets for the current month', async () => {
+  it('lets company admins set per-BDA daily stage targets', async () => {
     const created = await admin.ok(admin.post('/sales-crm/employees', {
       name: 'Stage Target BDA',
       email: `stage.bda.${Date.now()}@test.local`,

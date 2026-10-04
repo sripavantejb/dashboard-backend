@@ -1374,15 +1374,9 @@ salesCrmRoutes.delete('/targets/:id', needAdmin as never, route(async (req) => {
   return { id: String(t._id) };
 }));
 
-function currentMonthBounds(now = new Date()) {
-  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-  return { periodStart, periodEnd };
-}
-
 async function stageTargetRows(organizationId: string, employeeId?: string) {
   const org = organizationId;
-  const { periodStart, periodEnd } = currentMonthBounds();
+  const { start: periodStart, end: periodEnd } = istDayBounds();
   const employees = await SalesEmployee.find({
     organizationId: org,
     status: 'active',
@@ -1394,15 +1388,21 @@ async function stageTargetRows(organizationId: string, employeeId?: string) {
   const targets = await SalesStageTarget.find({
     organizationId: org,
     recordStatus: 'active',
-    periodStart,
     employeeId: { $in: employees.map((e) => e._id) },
-  }).lean();
-  const byEmployee = new Map(targets.map((t) => [String(t.employeeId), t]));
+  }).sort({ periodStart: -1 }).lean();
+  const byEmployee = new Map<string, OsDoc>();
+  for (const t of targets) {
+    const id = String(t.employeeId);
+    if (!byEmployee.has(id)) byEmployee.set(id, t);
+  }
   const leads = await SalesLead.find({
     organizationId: org,
     recordStatus: 'active',
     assignedEmployeeId: { $in: employees.map((e) => e._id) },
-    createdAt: { $gte: periodStart, $lte: periodEnd },
+    $or: [
+      { createdAt: { $gte: periodStart, $lte: periodEnd } },
+      { updatedAt: { $gte: periodStart, $lte: periodEnd } },
+    ],
   }).select('status assignedEmployeeId').lean();
 
   return employees.map((e) => {
@@ -1417,6 +1417,7 @@ async function stageTargetRows(organizationId: string, employeeId?: string) {
       employeeCode: e.employeeCode,
       periodStart,
       periodEnd,
+      period: 'daily',
       stages,
       actual,
       targetId: target ? String(target._id) : null,
@@ -1443,7 +1444,7 @@ salesCrmRoutes.put('/stage-targets', needAdmin as never, route(async (req) => {
   if (!(await SalesEmployee.exists({ _id: b.employeeId, organizationId: orgOf(req), isSalesAdmin: false }))) {
     throw new ValidationError('Choose a BDA / sales employee');
   }
-  const { periodStart, periodEnd } = currentMonthBounds();
+  const { start: periodStart, end: periodEnd } = istDayBounds();
   const stages = Object.fromEntries(
     SALES_LEAD_STATUSES.map((st) => [st, Math.max(0, Math.floor(Number(b.stages?.[st] ?? 0) || 0))])
   );

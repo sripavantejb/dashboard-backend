@@ -221,7 +221,7 @@ const targetSchema = osSchema({
 });
 export const SalesTarget = osModel('SalesTarget', targetSchema);
 
-/** Per-BDA monthly targets for each Sales CRM lead pipeline stage (set by company admins). */
+/** Per-BDA daily targets for each Sales CRM lead pipeline stage (set by company admins). */
 const stageTargetSchema = osSchema({
   employeeId: ref('SalesEmployee', { required: true, index: true }),
   periodStart: { type: Date, required: true },
