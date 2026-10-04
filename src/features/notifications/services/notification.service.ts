@@ -34,6 +34,27 @@ export class NotificationService {
       { read: true, readAt: new Date() }
     );
   }
+
+  async findSticky(userId: string) {
+    return Notification.find({
+      userId: new Types.ObjectId(userId),
+      sticky: true,
+      $or: [{ dismissedAt: { $exists: false } }, { dismissedAt: null }],
+    })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+  }
+
+  async dismiss(userId: string, id: string) {
+    const notification = await Notification.findOneAndUpdate(
+      { _id: id, userId },
+      { dismissedAt: new Date(), read: true, readAt: new Date() },
+      { new: true }
+    );
+    if (!notification) throw new NotFoundError('Notification');
+    return notification;
+  }
 }
 
 export const notificationService = new NotificationService();

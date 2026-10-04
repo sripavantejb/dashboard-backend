@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   Lead, Conversion, Vendor, Project, ProjectMember, Task, Invoice, Meeting, FollowUp, Transaction, TrackerRow,
-  RecurringPayment, ActivityEvent, Notification, User, SalesCustomer, SalesLead, SalesDeal, Referrer, ServiceCatalog, IndustryCatalog,
+  RecurringPayment, ActivityEvent, Notification, User, SalesCustomer, SalesLead, SalesDeal, SalesAttendance, SalesEmployee, Referrer, ServiceCatalog, IndustryCatalog,
 } from '../../../models/index.js';
 import { authenticate, authorize } from '../../../shared/middleware/auth.js';
 import { crudRouter, route, oid, escapeRegex, type CrudContext } from '../../../shared/utils/crud.js';
@@ -36,6 +36,7 @@ overviewRoutes.get(
     const org = oid(user.organizationId);
     const me = oid(user.id);
     const canSeeAll = permissionsAllow(user.permissions, 'projects:write') || permissionsAllow(user.permissions, '*');
+    const showBdaOps = canSeeAll || permissionsAllow(user.permissions, 'sales_crm:read');
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + DAY);
@@ -130,6 +131,60 @@ overviewRoutes.get(
         })
       : [];
 
+    const istDate = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+    const checkoutRows = showBdaOps
+      ? await SalesAttendance.find({ organizationId: org, date: istDate, checkOutAt: { $ne: null } }).sort({ checkOutAt: -1 }).limit(40).lean()
+      : [];
+    const checkoutEmployees = checkoutRows.length
+      ? await SalesEmployee.find({ organizationId: org, _id: { $in: checkoutRows.map((r) => r.employeeId).filter(Boolean) } }).select('employeeCode userId isSalesAdmin').lean()
+      : [];
+    const checkoutUsers = checkoutEmployees.length
+      ? await User.find({ _id: { $in: checkoutEmployees.map((e) => e.userId).filter(Boolean) } }).select('firstName lastName email').lean()
+      : [];
+    const userById = new Map(checkoutUsers.map((u) => [String(u._id), u]));
+    const empById = new Map(checkoutEmployees.map((e) => [String(e._id), e]));
+    const bdaCheckouts = checkoutRows.filter((r) => empById.get(String(r.employeeId)) && empById.get(String(r.employeeId))!.isSalesAdmin !== true).map((r) => {
+      const emp = empById.get(String(r.employeeId));
+      const u = emp?.userId ? userById.get(String(emp.userId)) : undefined;
+      return {
+        id: String(r._id),
+        name: fullName(u) || u?.email || 'BDA',
+        employeeCode: emp?.employeeCode || '',
+        checkOutAt: r.checkOutAt,
+        remarks: r.checkoutRemarks || r.notes || '',
+        snapshot: r.checkoutSnapshot || null,
+      };
+    });
+
+    const bdaStaff = showBdaOps
+      ? await SalesEmployee.find({ organizationId: org, status: 'active', recordStatus: 'active', isSalesAdmin: { $ne: true } }).select('employeeCode userId').lean()
+      : [];
+    const bdaUsers = bdaStaff.length
+      ? await User.find({ _id: { $in: bdaStaff.map((e) => e.userId).filter(Boolean) } }).select('firstName lastName email').lean()
+      : [];
+    const bdaUserById = new Map(bdaUsers.map((u) => [String(u._id), u]));
+    const attByEmp = new Map(checkoutRows.concat(
+      showBdaOps
+        ? await SalesAttendance.find({ organizationId: org, date: istDate }).lean()
+        : []
+    ).map((r) => [String(r.employeeId), r]));
+    const bdaAttendance = {
+      date: istDate,
+      checkins: bdaStaff.map((e) => {
+        const att = attByEmp.get(String(e._id));
+        const u = e.userId ? bdaUserById.get(String(e.userId)) : undefined;
+        return {
+          id: String(e._id),
+          name: fullName(u) || u?.email || 'BDA',
+          employeeCode: e.employeeCode || '',
+          status: att?.checkOutAt ? 'checked_out' : att?.checkInAt ? 'checked_in' : 'absent',
+          checkInAt: att?.checkInAt || null,
+          checkOutAt: att?.checkOutAt || null,
+        };
+      }),
+      checkouts: bdaCheckouts,
+    };
+
     return {
       canSeeAll,
       unread,
@@ -161,6 +216,8 @@ overviewRoutes.get(
         followUps: followUps.map((f) => ({ id: String(f._id), notes: f.title || 'Follow-up', dueAt: f.scheduledAt })),
         deliveryRisk: { dueSoon: dueSoon.length, overdueTasks: overdueTasks.length },
       },
+      bdaAttendance,
+      showBdaOps,
     };
   })
 );
@@ -207,7 +264,7 @@ overviewRoutes.post(
       byAssignee.set(id, [...(byAssignee.get(id) || []), t.title]);
     }
     for (const [id, titles] of byAssignee) {
-      await notifyStaff(orgId, { type: 'task_overdue_alert', title: `You have ${titles.length} overdue task(s)`, body: titles.slice(0, 6).join(' · '), href: '/tasks?view=my', recipientUserIds: [id] });
+      await notifyStaff(orgId, { type: 'task_overdue_alert', title: `You have ${titles.length} overdue task(s)`, body: titles.slice(0, 6).join(' · '), href: '/tasks?view=my', recipientUserIds: [id], sticky: true, email: true });
     }
     const byFollowUp = new Map<string, string[]>();
     for (const f of followUps) {
@@ -216,7 +273,7 @@ overviewRoutes.post(
       byFollowUp.set(id, [...(byFollowUp.get(id) || []), f.title || 'Follow-up']);
     }
     for (const [id, notes] of byFollowUp) {
-      await notifyStaff(orgId, { type: 'followup_due_alert', title: `${notes.length} follow-up(s) due`, body: notes.slice(0, 5).join(' · '), href: '/follow-ups', recipientUserIds: [id] });
+      await notifyStaff(orgId, { type: 'followup_due_alert', title: `${notes.length} follow-up(s) due`, body: notes.slice(0, 5).join(' · '), href: '/follow-ups', recipientUserIds: [id], sticky: true, email: true });
     }
     const assignees = new Set([...byAssignee.keys(), ...byFollowUp.keys()]).size;
     return { message: `Alerts emailed to ${admins.length} admin(s)${assignees ? ` + ${assignees} assignee(s)` : ''}.` };
@@ -234,7 +291,7 @@ overviewRoutes.post(
     await notifyStaff(actor.organizationId, {
       type: 'workload_nudge', title: `Workload check-in from ${actor.name || actor.email}`,
       body: `You currently have ${active} active task(s)${overdue ? ` (${overdue} overdue)` : ''}. Please update statuses or ask for help if blocked.`,
-      href, recipientUserIds: [String(userId)],
+      href, recipientUserIds: [String(userId)], sticky: true, email: true,
     });
     return { message: `Nudge sent to ${name || 'teammate'}.` };
   })

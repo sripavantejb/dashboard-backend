@@ -12,5 +12,5 @@ npm run dev
 
 ## Default super admin
 
-- Email: `superadmin@agencyerp.com`
+- Email: `superadmin@editcomedia.com` (also `superadmin@agencyerp.com`)
 - Password: `SuperAdmin@123456`

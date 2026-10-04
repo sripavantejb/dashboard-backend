@@ -1,4 +1,4 @@
-import { SalesEmployee } from '../../../models/index.js';
+import { Organization, SalesEmployee } from '../../../models/index.js';
 
 /** Map a Sales CRM path to the portal the recipient actually uses (BDA vs Sales CRM admin). */
 export async function salesPortalHref(organizationId: string, userId: string, salesCrmPath: string) {
@@ -8,10 +8,13 @@ export async function salesPortalHref(organizationId: string, userId: string, sa
     recordStatus: { $ne: 'archived' },
   }).select('isSalesAdmin').lean();
   if (emp && !emp.isSalesAdmin) {
-    if (salesCrmPath.startsWith('/sales-crm')) return salesCrmPath.replace(/^\/sales-crm/, '/bda');
-    if (salesCrmPath.startsWith('/tasks')) return '/bda/tasks';
-    if (salesCrmPath.startsWith('/notifications')) return '/bda/notifications';
-    return `/bda${salesCrmPath.startsWith('/') ? '' : '/'}${salesCrmPath.replace(/^\//, '')}`;
+    const org = await Organization.findById(organizationId).select('slug').lean();
+    const prefix = org?.slug ? `/${org.slug}/bda` : '/bda';
+    if (salesCrmPath.startsWith('/sales-crm')) return salesCrmPath.replace(/^\/sales-crm/, prefix);
+    if (salesCrmPath.startsWith('/bda')) return salesCrmPath.replace(/^\/bda/, prefix);
+    if (salesCrmPath.startsWith('/tasks')) return `${prefix}/tasks`;
+    if (salesCrmPath.startsWith('/notifications')) return `${prefix}/notifications`;
+    return `${prefix}${salesCrmPath.startsWith('/') ? '' : '/'}${salesCrmPath.replace(/^\//, '')}`;
   }
   return salesCrmPath;
 }

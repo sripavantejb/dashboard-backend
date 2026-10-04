@@ -62,6 +62,8 @@ export interface NotifyInput {
   email?: boolean;
   /** Also emails the addresses the company configured for this category in Settings. */
   emailCategory?: NotificationCategory;
+  /** In-app popup that stays until the recipient clicks X. */
+  sticky?: boolean;
 }
 
 /**
@@ -97,7 +99,8 @@ export async function notifyStaff(organizationId: string, input: NotifyInput) {
         message: input.body || input.title,
         entityType: input.entityType,
         entityId: input.entityId,
-        metadata: { kind: input.type || 'system', href: input.href || '' },
+        sticky: Boolean(input.sticky),
+        metadata: { kind: input.type || 'system', href: input.href || '', sticky: Boolean(input.sticky) },
       }))
     );
 

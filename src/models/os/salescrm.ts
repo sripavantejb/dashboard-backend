@@ -259,6 +259,8 @@ const attendanceSchema = osSchema({
   checkInAt: Date,
   checkOutAt: Date,
   notes: str(),
+  checkoutRemarks: str(),
+  checkoutSnapshot: { type: Schema.Types.Mixed, default: undefined },
 });
 attendanceSchema.index({ organizationId: 1, employeeId: 1, date: 1 }, { unique: true });
 export const SalesAttendance = osModel('SalesAttendance', attendanceSchema);

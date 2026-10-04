@@ -17,6 +17,10 @@ describe('sales admin', () => {
     const me = await admin.ok(admin.get('/sales-crm/me'));
     expect(me.isSalesAdmin).toBe(true);
     await admin.ok(admin.get('/sales-crm/dashboard'));
+    const activity = await admin.ok(admin.get('/sales-crm/team-activity'));
+    expect(activity.totals).toMatchObject({ bdas: expect.any(Number), contacting: expect.any(Number), openLeads: expect.any(Number) });
+    expect(activity.pipeline).toBeTruthy();
+    expect(Array.isArray(activity.rows)).toBe(true);
   });
 
   it('runs a lead through a won deal', async () => {
@@ -50,6 +54,7 @@ describe('sales employee', () => {
     const me = await employee.ok(employee.get('/sales-crm/me'));
     expect(me.isSalesAdmin).toBe(false);
     expect((await employee.get('/sales-crm/analytics')).status).toBe(403);
+    expect((await employee.get('/sales-crm/team-activity')).status).toBe(403);
     expect((await employee.post('/sales-crm/employees', { name: 'X', email: 'x@test.local', password: 'Xx#Test1234' })).status).toBe(403);
   });
 

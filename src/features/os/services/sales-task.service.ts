@@ -1,5 +1,6 @@
 import { SalesEmployee, SalesTask } from '../../../models/index.js';
 import { notifyStaff } from '../../../shared/os/activity.js';
+import { salesPortalHref } from './sales-portal.service.js';
 
 const SALES_PRIORITIES = new Set(['urgent', 'high', 'medium', 'low']);
 
@@ -70,9 +71,11 @@ export async function syncAgencyTaskToSalesPortal(opts: {
       type: 'task_assigned',
       title: `New task: ${title}`,
       body: opts.task.dueDate ? `Due ${new Date(opts.task.dueDate).toDateString()}` : 'Open it in your BDA portal',
-      href: '/bda/tasks',
+      href: await salesPortalHref(opts.organizationId, userId, '/sales-crm/tasks'),
       recipientUserIds: [userId],
       emailCategory: 'tasks',
+      sticky: true,
+      email: true,
     });
   }
 

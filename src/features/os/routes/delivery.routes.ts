@@ -470,6 +470,8 @@ export const taskRoutes = crudRouter({
         href: `/tasks/${doc._id}`,
         recipientUserIds: [String(doc.assignedTo)],
         emailCategory: 'tasks',
+        sticky: true,
+        email: true,
       });
     }
     await logActivity(ctx.actor, { title: 'Task assigned', detail: doc.title, entityType: 'task', entityId: String(doc._id), projectId: doc.projectId ? String(doc.projectId) : undefined, actionType: 'TASK_ASSIGNED' });
@@ -481,7 +483,7 @@ export const taskRoutes = crudRouter({
     });
     if (reassigned && doc.assignedTo) {
       if (!mirrored) {
-        await notifyStaff(ctx.organizationId, { title: `Task reassigned to you: ${doc.title}`, href: `/tasks/${doc._id}`, recipientUserIds: [String(doc.assignedTo)], excludeUserId: ctx.actor.userId, emailCategory: 'tasks' });
+        await notifyStaff(ctx.organizationId, { title: `Task reassigned to you: ${doc.title}`, href: `/tasks/${doc._id}`, recipientUserIds: [String(doc.assignedTo)], excludeUserId: ctx.actor.userId, emailCategory: 'tasks', sticky: true, email: true });
       }
       await logActivity(ctx.actor, { title: 'Task reassigned', detail: doc.title, entityType: 'task', entityId: String(doc._id), actionType: 'TASK_REASSIGNED' });
     }

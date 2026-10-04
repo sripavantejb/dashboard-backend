@@ -24,6 +24,7 @@ import { salesPortalHref } from '../services/sales-portal.service.js';
 import { callingRoutes } from '../calling/routes.js';
 import { buildCallAnalytics, loggedCallMatch, withCallerNames } from '../calling/analytics.js';
 import { toDialablePhone } from '../calling/phone.js';
+import { buildBdaTeamActivity } from '../services/sales-team-activity.service.js';
 
 type ModuleKey = (typeof SALES_MODULES)[number];
 
@@ -60,7 +61,7 @@ async function salesContext(req: SalesRequest, _res: Response, next: NextFunctio
     const companyAdmin = permissionsAllow(user.permissions, 'sales_crm:write');
     const isSalesRole = user.role === 'sales';
     let employee = await SalesEmployee.findOne({ organizationId: user.organizationId, userId: user.id }).lean();
-    if (!employee && (companyAdmin || isSalesRole)) {
+    if (!employee && user.role !== 'super_admin' && (companyAdmin || isSalesRole)) {
       employee = (await SalesEmployee.create({
         organizationId: user.organizationId, userId: user.id, isSalesAdmin: companyAdmin, employeeCode: await nextEmployeeCode(user.organizationId, companyAdmin),
         createdBy: user.email, updatedBy: user.email,
@@ -169,6 +170,8 @@ salesCrmRoutes.get('/me', route(async (req) => {
   const s = ctx(req);
   return { employee: s.employee, isSalesAdmin: s.isSalesAdmin, modules: s.modules, name: s.name };
 }));
+
+salesCrmRoutes.get('/team-activity', needAdmin as never, route(async (req) => buildBdaTeamActivity(orgOf(req))));
 
 /** BDA Home / My Day — overdue work, today's agenda, hot leads, quick stats. */
 salesCrmRoutes.get('/my-day', route(async (req) => {
@@ -413,20 +416,58 @@ const leadSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+function parseDay(value: string, end = false) {
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(+d)) return null;
+  if (end) d.setHours(23, 59, 59, 999);
+  return d;
+}
+
 salesCrmRoutes.get('/leads', needModule('leads.management') as never, route(async (req) => {
   const q = req.query as Record<string, string>;
-  const filter: Record<string, unknown> = { organizationId: oid(orgOf(req)), recordStatus: 'active', ...ownScope(req, 'assignedEmployeeId') };
+  const org = orgOf(req);
+  const filter: Record<string, unknown> = { organizationId: oid(org), recordStatus: 'active', ...ownScope(req, 'assignedEmployeeId') };
   if (q.status && q.status !== 'all') filter.status = q.status;
   if (q.temperature) filter.temperature = q.temperature;
   if (q.source) filter.source = q.source;
+  if (q.priority) filter.priority = q.priority;
   if (q.unassigned === 'true' && ctx(req).isSalesAdmin) filter.assignedEmployeeId = null;
+  else if (q.assignedEmployeeId && isObjectId(q.assignedEmployeeId) && ctx(req).isSalesAdmin) filter.assignedEmployeeId = oid(q.assignedEmployeeId);
   if (q.search?.trim()) {
     const rx = { $regex: escapeRegex(q.search.trim()), $options: 'i' };
     filter.$or = [{ contactPerson: rx }, { company: rx }, { email: rx }, { phone: rx }];
   }
+  const dateField = ['createdAt', 'lastContactedAt', 'nextFollowUpAt'].includes(q.dateField) ? q.dateField : 'createdAt';
+  const from = q.from ? parseDay(q.from) : null;
+  const to = q.to ? parseDay(q.to, true) : null;
+  if (from || to) {
+    const range: Record<string, Date> = {};
+    if (from) range.$gte = from;
+    if (to) range.$lte = to;
+    filter[dateField] = range;
+  }
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(todayStart);
+  todayEnd.setHours(23, 59, 59, 999);
+  if (q.followUp === 'overdue') filter.nextFollowUpAt = { $lt: todayStart };
+  else if (q.followUp === 'today') filter.nextFollowUpAt = { $gte: todayStart, $lte: todayEnd };
+  else if (q.followUp === 'upcoming') filter.nextFollowUpAt = { $gt: todayEnd };
+  else if (q.followUp === 'none') filter.$and = [{ $or: [{ nextFollowUpAt: { $exists: false } }, { nextFollowUpAt: null }] }];
+  if (q.dealStage) {
+    const dealFilter: Record<string, unknown> = { organizationId: oid(org), recordStatus: 'active', leadId: { $ne: null } };
+    if (q.dealStage === 'none') {
+      const withDeal = await SalesDeal.distinct('leadId', dealFilter);
+      filter._id = { $nin: withDeal.filter(Boolean) };
+    } else {
+      dealFilter.stage = q.dealStage;
+      const withDeal = await SalesDeal.distinct('leadId', dealFilter);
+      filter._id = { $in: withDeal.filter(Boolean) };
+    }
+  }
   const leads = await SalesLead.find(filter).sort({ createdAt: -1 }).limit(500).lean();
-  const employees = await SalesEmployee.find({ organizationId: orgOf(req), _id: { $in: leads.map((l) => l.assignedEmployeeId).filter(Boolean) } }).lean();
-  const names = await employeeNames(orgOf(req), employees);
+  const employees = await SalesEmployee.find({ organizationId: org, _id: { $in: leads.map((l) => l.assignedEmployeeId).filter(Boolean) } }).lean();
+  const names = await employeeNames(org, employees);
   return leads.map((l) => ({ ...l, assignedName: l.assignedEmployeeId ? names.get(String(l.assignedEmployeeId))?.name || '' : '' }));
 }));
 
@@ -508,6 +549,9 @@ salesCrmRoutes.post('/leads/:id/assign', needAdmin as never, route(async (req) =
     body: lead.company || '',
     href: await salesPortalHref(org, String(employee.userId), `/sales-crm/leads/${lead._id}`),
     recipientUserIds: [String(employee.userId)],
+    sticky: true,
+    email: true,
+    emailCategory: 'sales',
   });
   return lead;
 }));
@@ -946,6 +990,9 @@ salesCrmRoutes.post('/tasks', needModule('tasks.management') as never, route(asy
       body: b.title,
       href: await salesPortalHref(orgOf(req), String(assignee.userId), '/sales-crm/tasks'),
       recipientUserIds: [String(assignee.userId)],
+      sticky: true,
+      email: true,
+      emailCategory: 'tasks',
     });
   }
   await logSales(req, 'task_created', assignee ? `Task "${b.title}" assigned` : `Task created: ${b.title}`);
@@ -1021,6 +1068,8 @@ salesCrmRoutes.post('/approvals/:id/decide', needAdmin as never, route(async (re
       body: b.reviewerComment || '',
       href: await salesPortalHref(orgOf(req), String(requester.userId), '/sales-crm/approvals'),
       recipientUserIds: [String(requester.userId)],
+      sticky: true,
+      email: true,
     });
   }
   return approval;
@@ -1056,52 +1105,209 @@ salesCrmRoutes.post('/escalate', route(async (req) => {
 // ---------------------------------------------------------------- attendance + work status
 const todayKey = () => new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
 
+function istDayBounds(date = todayKey()) {
+  return { date, start: new Date(`${date}T00:00:00+05:30`), end: new Date(`${date}T23:59:59.999+05:30`) };
+}
+
+async function buildCheckoutSnapshot(req: AuthenticatedRequest, remarks = '') {
+  const s = ctx(req);
+  const org = oid(orgOf(req));
+  const me = oid(s.employeeId);
+  const { date, start, end } = istDayBounds();
+  const leadFilter: Record<string, unknown> = { organizationId: org, recordStatus: 'active' };
+  if (!s.isSalesAdmin) leadFilter.assignedEmployeeId = me;
+  const [leads, callsToday, followUpsCompleted, dealsWonToday] = await Promise.all([
+    SalesLead.find(leadFilter).select('status notes createdAt updatedAt contactPerson company').lean(),
+    SalesCall.countDocuments({ organizationId: org, employeeId: me, calledAt: { $gte: start, $lte: end }, ...loggedCallMatch() }),
+    SalesFollowUp.countDocuments({ organizationId: org, ownerEmployeeId: me, status: 'completed', completedAt: { $gte: start, $lte: end } }),
+    SalesDeal.countDocuments({ organizationId: org, ownerEmployeeId: me, stage: 'won', closedAt: { $gte: start, $lte: end } }),
+  ]);
+  const inDay = (d?: Date | string | null) => {
+    if (!d) return false;
+    const t = +new Date(d);
+    return t >= +start && t <= +end;
+  };
+  const newToday = leads.filter((l) => inDay(l.createdAt));
+  const convertedToday = leads.filter((l) => l.status === 'converted' && inDay(l.updatedAt));
+  const lostToday = leads.filter((l) => l.status === 'lost' && inDay(l.updatedAt));
+  const byStatus = Object.fromEntries(SALES_LEAD_STATUSES.map((st) => [st, leads.filter((l) => l.status === st).length]));
+  const label = (l: OsDoc) => [l.contactPerson, l.company].filter(Boolean).join(' · ');
+  return {
+    date,
+    totalLeads: leads.length,
+    openLeads: leads.filter((l) => !['converted', 'lost'].includes(l.status)).length,
+    newToday: newToday.length,
+    convertedToday: convertedToday.length,
+    lostToday: lostToday.length,
+    byStatus,
+    callsToday,
+    followUpsCompleted,
+    dealsWonToday,
+    remarks,
+    newLeads: newToday.slice(0, 20).map((l) => ({ id: String(l._id), name: label(l), status: l.status })),
+    convertedLeads: convertedToday.slice(0, 20).map((l) => ({ id: String(l._id), name: label(l), notes: l.notes || '' })),
+  };
+}
+
+function durationMinutes(checkInAt?: Date | null, checkOutAt?: Date | null) {
+  if (!checkInAt || !checkOutAt) return null;
+  return Math.max(0, Math.round((+new Date(checkOutAt) - +new Date(checkInAt)) / 60_000));
+}
+
+function shiftFrom(days: number) {
+  const d = new Date(`${todayKey()}T12:00:00+05:30`);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 salesCrmRoutes.get('/attendance', route(async (req) => {
   const s = ctx(req);
   const org = orgOf(req);
+  const me = oid(s.employeeId);
   if (s.isSalesAdmin) {
     const date = String(req.query.date || todayKey());
+    const bdaFilter = { organizationId: org, status: 'active', recordStatus: 'active', isSalesAdmin: { $ne: true } };
     const [employees, records] = await Promise.all([
-      SalesEmployee.find({ organizationId: org, status: 'active', recordStatus: 'active' }).lean(),
+      SalesEmployee.find(bdaFilter).lean(),
       SalesAttendance.find({ organizationId: org, date }).lean(),
     ]);
     const names = await employeeNames(org, employees);
+    const bdaIds = new Set(employees.map((e) => String(e._id)));
+    const bdaRecords = records.filter((r) => bdaIds.has(String(r.employeeId)));
     return {
       date,
       rows: employees.map((e) => {
         const r = records.find((x) => String(x.employeeId) === String(e._id));
-        return { employeeId: String(e._id), name: names.get(String(e._id))?.name, employeeCode: e.employeeCode, status: r?.status || 'absent', checkInAt: r?.checkInAt, checkOutAt: r?.checkOutAt };
+        return {
+          employeeId: String(e._id), name: names.get(String(e._id))?.name, employeeCode: e.employeeCode,
+          status: r?.checkOutAt ? 'checked_out' : r?.checkInAt ? 'checked_in' : (r?.status || 'absent'),
+          checkInAt: r?.checkInAt, checkOutAt: r?.checkOutAt,
+          durationMinutes: durationMinutes(r?.checkInAt, r?.checkOutAt),
+          remarks: r?.checkoutRemarks || r?.notes || '', snapshot: r?.checkoutSnapshot || null,
+        };
       }),
-      present: records.filter((r) => r.checkInAt).length,
+      present: bdaRecords.filter((r) => r.checkInAt).length,
       total: employees.length,
     };
   }
-  if (!s.modules['workforce.attendance_sync']) throw new ForbiddenError('This module is not enabled for your account');
-  const history = await SalesAttendance.find({ organizationId: org, employeeId: s.employeeId }).sort({ date: -1 }).limit(60).lean();
+  const history = await SalesAttendance.find({ organizationId: org, employeeId: me }).sort({ date: -1 }).limit(60).lean();
   return { today: history.find((h) => h.date === todayKey()) || null, history };
 }));
 
-salesCrmRoutes.post('/attendance/check-in', needModule('workforce.attendance_sync') as never, route(async (req) => {
+salesCrmRoutes.get('/attendance/history', route(async (req) => {
   const s = ctx(req);
-  const date = todayKey();
-  const existing = await SalesAttendance.findOne({ organizationId: orgOf(req), employeeId: s.employeeId, date }).lean();
-  if (existing?.checkInAt) throw new ValidationError('Already checked in today.');
-  const row = await SalesAttendance.findOneAndUpdate(
-    { organizationId: orgOf(req), employeeId: s.employeeId, date },
-    { $set: { checkInAt: new Date(), status: 'present' }, $setOnInsert: { createdBy: req.user!.email } },
-    { upsert: true, new: true }
-  );
-  await logSales(req, 'attendance_check_in', 'Checked in for the day');
-  return row;
+  const org = orgOf(req);
+  const days = Math.min(90, Math.max(7, Number(req.query.days) || 30));
+  const from = shiftFrom(days - 1);
+  const filter: Record<string, unknown> = { organizationId: org, date: { $gte: from } };
+  if (!s.isSalesAdmin) filter.employeeId = oid(s.employeeId);
+  const bdas = s.isSalesAdmin
+    ? await SalesEmployee.find({ organizationId: org, isSalesAdmin: { $ne: true }, recordStatus: 'active' }).select('_id').lean()
+    : [];
+  if (s.isSalesAdmin) filter.employeeId = { $in: bdas.map((e) => e._id) };
+  const records = await SalesAttendance.find(filter).sort({ date: -1, checkInAt: -1 }).limit(500).lean();
+  const employees = await SalesEmployee.find({ organizationId: org, _id: { $in: records.map((r) => r.employeeId).filter(Boolean) } }).lean();
+  const names = await employeeNames(org, employees);
+  const empById = new Map(employees.map((e) => [String(e._id), e]));
+  return {
+    from,
+    days,
+    rows: records.map((r) => ({
+      _id: String(r._id),
+      employeeId: String(r.employeeId),
+      name: names.get(String(r.employeeId))?.name || 'BDA',
+      employeeCode: empById.get(String(r.employeeId))?.employeeCode || '',
+      date: r.date,
+      status: r.checkOutAt ? 'checked_out' : r.checkInAt ? 'checked_in' : (r.status || 'absent'),
+      checkInAt: r.checkInAt || null,
+      checkOutAt: r.checkOutAt || null,
+      durationMinutes: durationMinutes(r.checkInAt, r.checkOutAt),
+      remarks: r.checkoutRemarks || r.notes || '',
+      snapshot: r.checkoutSnapshot || null,
+    })),
+  };
 }));
 
-salesCrmRoutes.post('/attendance/check-out', needModule('workforce.attendance_sync') as never, route(async (req) => {
+salesCrmRoutes.get('/attendance/checkout-preview', route(async (req) => {
   const s = ctx(req);
-  const row = await SalesAttendance.findOne({ organizationId: orgOf(req), employeeId: s.employeeId, date: todayKey() });
-  if (!row?.checkInAt) throw new ValidationError('Check in first.');
-  if (row.checkOutAt) throw new ValidationError('Already checked out today.');
-  row.checkOutAt = new Date();
-  await row.save();
+  const today = await SalesAttendance.findOne({ organizationId: orgOf(req), employeeId: oid(s.employeeId), date: todayKey() }).lean();
+  let snapshot;
+  try {
+    snapshot = await buildCheckoutSnapshot(req);
+  } catch {
+    snapshot = {
+      date: todayKey(), totalLeads: 0, openLeads: 0, newToday: 0, convertedToday: 0, lostToday: 0,
+      byStatus: {}, callsToday: 0, followUpsCompleted: 0, dealsWonToday: 0, remarks: '', newLeads: [], convertedLeads: [],
+    };
+  }
+  return { today, snapshot };
+}));
+
+salesCrmRoutes.post('/attendance/check-in', route(async (req) => {
+  const s = ctx(req);
+  const date = todayKey();
+  const org = orgOf(req);
+  const me = oid(s.employeeId);
+  const existing = await SalesAttendance.findOne({ organizationId: org, employeeId: me, date });
+  if (existing?.checkInAt) throw new ValidationError('Already checked in today.');
+  try {
+    if (existing) {
+      existing.checkInAt = new Date();
+      existing.status = 'present';
+      await existing.save();
+      await logSales(req, 'attendance_check_in', 'Checked in for the day');
+      return existing;
+    }
+    const row = await SalesAttendance.create({
+      organizationId: org, employeeId: me, date, status: 'present', checkInAt: new Date(), createdBy: req.user!.email,
+    });
+    await logSales(req, 'attendance_check_in', 'Checked in for the day');
+    return row;
+  } catch (err) {
+    if ((err as { code?: number }).code !== 11000) throw err;
+    const row = await SalesAttendance.findOne({ organizationId: org, employeeId: me, date });
+    if (row?.checkInAt) throw new ValidationError('Already checked in today.');
+    if (!row) throw err;
+    row.checkInAt = new Date();
+    row.status = 'present';
+    await row.save();
+    await logSales(req, 'attendance_check_in', 'Checked in for the day');
+    return row;
+  }
+}));
+
+salesCrmRoutes.post('/attendance/check-out', route(async (req) => {
+  const s = ctx(req);
+  const { remarks } = parseBody<{ remarks: string }>(
+    z.object({ remarks: z.string().trim().min(8, 'Add remarks before check-out (at least 8 characters)') }),
+    req.body || {}
+  );
+  const date = todayKey();
+  const org = orgOf(req);
+  const me = oid(s.employeeId);
+  let row = await SalesAttendance.findOne({ organizationId: org, employeeId: me, date });
+  if (row?.checkOutAt) throw new ValidationError('Already checked out today.');
+  const snapshot = await buildCheckoutSnapshot(req, remarks);
+  const now = new Date();
+  if (!row) {
+    row = await SalesAttendance.create({
+      organizationId: org, employeeId: me, date, status: 'present',
+      checkInAt: now, checkOutAt: now, checkoutRemarks: remarks, checkoutSnapshot: snapshot, createdBy: req.user!.email,
+    });
+  } else {
+    if (!row.checkInAt) row.checkInAt = now;
+    row.checkOutAt = now;
+    row.status = 'present';
+    row.checkoutRemarks = remarks;
+    row.checkoutSnapshot = snapshot;
+    row.markModified('checkoutSnapshot');
+    await row.save();
+  }
+  const summary = `${snapshot.newToday} new · ${snapshot.convertedToday} converted · ${snapshot.totalLeads} leads · ${snapshot.callsToday} calls`;
+  await logSales(req, 'attendance_check_out', `Checked out · ${summary}`, {
+    detail: remarks,
+    metadata: snapshot as unknown as Record<string, unknown>,
+  });
   return row;
 }));
 

@@ -11,7 +11,9 @@ router.use(authenticate);
 
 router.get('/', notificationController.findAll.bind(notificationController));
 router.get('/unread-count', notificationController.getUnreadCount.bind(notificationController));
+router.get('/sticky', notificationController.findSticky.bind(notificationController));
 router.patch('/read-all', notificationController.markAllAsRead.bind(notificationController));
 router.patch('/:id/read', validateParams(idParam), notificationController.markAsRead.bind(notificationController));
+router.patch('/:id/dismiss', validateParams(idParam), notificationController.dismiss.bind(notificationController));
 
 export default router;

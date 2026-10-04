@@ -20,6 +20,9 @@ export interface INotification extends Document {
   entityId?: string;
   read: boolean;
   readAt?: Date;
+  /** Stays on-screen for the recipient until they click dismiss (X). */
+  sticky?: boolean;
+  dismissedAt?: Date;
   metadata?: Record<string, unknown>;
   createdAt: Date;
 }
@@ -38,6 +41,8 @@ const notificationSchema = new Schema<INotification>({
   entityId: String,
   read: { type: Boolean, default: false, index: true },
   readAt: Date,
+  sticky: { type: Boolean, default: false, index: true },
+  dismissedAt: Date,
   metadata: Schema.Types.Mixed,
   createdAt: { type: Date, default: Date.now, index: true },
 });

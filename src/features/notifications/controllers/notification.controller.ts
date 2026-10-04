@@ -38,6 +38,24 @@ export class NotificationController {
       next(error);
     }
   }
+
+  async findSticky(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const rows = await notificationService.findSticky(req.user!.id);
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async dismiss(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const notification = await notificationService.dismiss(req.user!.id, req.params.id as string);
+      res.json({ success: true, data: notification });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const notificationController = new NotificationController();
