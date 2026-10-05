@@ -118,17 +118,18 @@ describe('sales employee', () => {
     expect(text).not.toContain('CRM Lead');
   });
 
-  it('bulk imports leads from the sample CSV template', async () => {
+  it('bulk imports leads from CSV and Excel sample templates', async () => {
     const template = await employee.ok(employee.get('/sales-crm/leads/import/template'));
     expect(template.csv).toContain('contactPerson');
+    expect(template.xlsxBase64).toBeTruthy();
     expect(template.columns.some((c: { key: string; required: boolean }) => c.key === 'contactPerson' && c.required)).toBe(true);
 
-    const result = await employee.ok(employee.post('/sales-crm/leads/import', {
+    const csvResult = await employee.ok(employee.post('/sales-crm/leads/import', {
       csv: template.csv,
       duplicateStrategy: 'skip',
     }));
-    expect(result.imported).toBeGreaterThanOrEqual(3);
-    expect(result.failed).toBe(0);
+    expect(csvResult.imported).toBeGreaterThanOrEqual(3);
+    expect(csvResult.failed).toBe(0);
 
     const leads = await employee.ok(employee.get('/sales-crm/leads?search=Priya'));
     expect(JSON.stringify(leads)).toContain('Priya Sharma');
@@ -139,5 +140,13 @@ describe('sales employee', () => {
       duplicateStrategy: 'skip',
     }));
     expect(again.skipped).toBeGreaterThanOrEqual(3);
+
+    const xlsxResult = await employee.ok(employee.post('/sales-crm/leads/import', {
+      contentBase64: template.xlsxBase64,
+      filename: 'bda-leads-import-sample.xlsx',
+      duplicateStrategy: 'skip',
+    }));
+    expect(xlsxResult.skipped + xlsxResult.imported + xlsxResult.updated).toBeGreaterThanOrEqual(3);
+    expect(xlsxResult.failed).toBe(0);
   });
 });

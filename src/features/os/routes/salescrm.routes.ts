@@ -1,4 +1,5 @@
 import { Router, type Response, type NextFunction } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import type { Model } from 'mongoose';
 import {
@@ -25,8 +26,19 @@ import { callingRoutes } from '../calling/routes.js';
 import { buildCallAnalytics, loggedCallMatch, withCallerNames } from '../calling/analytics.js';
 import { toDialablePhone } from '../calling/phone.js';
 import { buildBdaTeamActivity } from '../services/sales-team-activity.service.js';
-import { buildSalesLeadImportTemplate, importSalesLeadsFromCsv } from '../services/sales-lead-import.service.js';
+import {
+  buildSalesLeadImportCsv,
+  buildSalesLeadImportTemplate,
+  buildSalesLeadImportXlsx,
+  importSalesLeadsFromCsv,
+  importSalesLeadsFromUpload,
+} from '../services/sales-lead-import.service.js';
 import { logger } from '../../../shared/logger/index.js';
+
+const leadImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
 
 type ModuleKey = (typeof SALES_MODULES)[number];
 
@@ -478,28 +490,94 @@ salesCrmRoutes.post('/leads', needModule('leads.management') as never, route(asy
 
 salesCrmRoutes.get('/leads/import/template', needModule('leads.management') as never, route(async () => buildSalesLeadImportTemplate()));
 
-salesCrmRoutes.post('/leads/import', needModule('leads.management') as never, route(async (req) => {
-  const s = ctx(req);
-  const body = parseBody<{ csv: string; duplicateStrategy?: 'skip' | 'update' }>(
-    z.object({
-      csv: z.string().min(10, 'Paste or upload a CSV file'),
-      duplicateStrategy: z.enum(['skip', 'update']).optional(),
-    }),
-    req.body,
-  );
-  const result = await importSalesLeadsFromCsv({
-    organizationId: orgOf(req),
-    csv: body.csv,
-    duplicateStrategy: body.duplicateStrategy || 'skip',
-    assignedEmployeeId: s.isSalesAdmin ? undefined : s.employeeId,
-    actorEmail: req.user!.email,
-  });
+salesCrmRoutes.get('/leads/import/template.csv', needModule('leads.management') as never, (req, res, next) => {
+  try {
+    const csv = buildSalesLeadImportCsv();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="bda-leads-import-sample.csv"');
+    res.status(200).send(csv);
+  } catch (error) {
+    next(error);
+  }
+});
+
+salesCrmRoutes.get('/leads/import/template.xlsx', needModule('leads.management') as never, (req, res, next) => {
+  try {
+    const xlsx = buildSalesLeadImportXlsx();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="bda-leads-import-sample.xlsx"');
+    res.status(200).send(xlsx);
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function runLeadImport(
+  req: AuthenticatedRequest,
+  result: Awaited<ReturnType<typeof importSalesLeadsFromCsv>>,
+) {
   logSales(req, 'lead_created', `Bulk imported ${result.imported} lead${result.imported === 1 ? '' : 's'}`, {
-    detail: `updated ${result.updated}, skipped ${result.skipped}, failed ${result.failed}`,
-    metadata: { imported: result.imported, updated: result.updated, skipped: result.skipped, failed: result.failed },
+    detail: `updated ${result.updated}, skipped ${result.skipped}, failed ${result.failed}${result.format ? ` · ${result.format}` : ''}`,
+    metadata: {
+      imported: result.imported,
+      updated: result.updated,
+      skipped: result.skipped,
+      failed: result.failed,
+      format: result.format,
+    },
   });
   return result;
+}
+
+salesCrmRoutes.post('/leads/import', needModule('leads.management') as never, route(async (req) => {
+  const s = ctx(req);
+  const body = parseBody<{ csv?: string; contentBase64?: string; filename?: string; duplicateStrategy?: 'skip' | 'update' }>(
+    z.object({
+      csv: z.string().min(10).optional(),
+      contentBase64: z.string().min(8).optional(),
+      filename: z.string().optional(),
+      duplicateStrategy: z.enum(['skip', 'update']).optional(),
+    }).refine((v) => Boolean(v.csv || v.contentBase64), { message: 'Upload a spreadsheet or paste CSV content' }),
+    req.body,
+  );
+  const strategy = body.duplicateStrategy || 'skip';
+  const common = {
+    organizationId: orgOf(req),
+    duplicateStrategy: strategy as 'skip' | 'update',
+    assignedEmployeeId: s.isSalesAdmin ? undefined : s.employeeId,
+    actorEmail: req.user!.email,
+  };
+  const result = body.contentBase64
+    ? await importSalesLeadsFromUpload({
+      ...common,
+      buffer: Buffer.from(body.contentBase64, 'base64'),
+      filename: body.filename || 'upload.xlsx',
+    })
+    : await importSalesLeadsFromCsv({ ...common, csv: body.csv || '' });
+  return runLeadImport(req, result);
 }));
+
+salesCrmRoutes.post(
+  '/leads/import/upload',
+  needModule('leads.management') as never,
+  leadImportUpload.single('file'),
+  route(async (req) => {
+    const s = ctx(req);
+    const file = (req as AuthenticatedRequest & { file?: Express.Multer.File }).file;
+    if (!file?.buffer?.length) throw new ValidationError('Choose a .xlsx, .xls, or .csv file to upload');
+    const strategy = String((req.body as { duplicateStrategy?: string })?.duplicateStrategy || 'skip');
+    const duplicateStrategy = strategy === 'update' ? 'update' : 'skip';
+    const result = await importSalesLeadsFromUpload({
+      organizationId: orgOf(req),
+      buffer: file.buffer,
+      filename: file.originalname || 'upload.xlsx',
+      duplicateStrategy,
+      assignedEmployeeId: s.isSalesAdmin ? undefined : s.employeeId,
+      actorEmail: req.user!.email,
+    });
+    return runLeadImport(req, result);
+  }),
+);
 
 salesCrmRoutes.get('/leads/:id', needModule('leads.management') as never, route(async (req) => {
   const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
