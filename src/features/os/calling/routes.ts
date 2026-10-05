@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { SalesActivityEvent, SalesCall, SalesFollowUp, SalesLead, SalesPhoneLink } from '../../../models/index.js';
 import { SALES_CALL_FORM_OUTCOMES } from '../../../shared/constants/os.js';
 import { NotFoundError, ValidationError } from '../../../shared/errors/index.js';
-import { actorFrom, logActivity, notifyStaff } from '../../../shared/os/activity.js';
+import { actorFrom, logActivity } from '../../../shared/os/activity.js';
 import type { AuthenticatedRequest } from '../../../shared/types/index.js';
 import { isObjectId, parseBody, route } from '../../../shared/utils/crud.js';
 import { getCallProvider } from './provider.js';
@@ -14,35 +14,28 @@ async function mirrorCallActivity(
 ) {
   const sales = salesOf(req);
   const organizationId = req.user!.organizationId;
-  await SalesActivityEvent.create({
-    organizationId,
-    type: input.type,
-    title: input.title,
-    actorEmployeeId: sales.employeeId,
-    actorName: sales.name,
-    leadId: input.leadId,
-    metadata: { callId: input.callId, ...input.metadata },
-    createdBy: req.user!.email,
-  });
-  await logActivity(actorFrom(req.user!), {
-    title: `BDA · ${input.title}`,
-    detail: sales.name,
-    entityType: 'sales_call',
-    entityId: input.callId,
-    actionType: input.type,
-    leadId: input.leadId ? String(input.leadId) : undefined,
-    metadata: { callId: input.callId, source: 'bda', ...input.metadata },
-  });
-  await notifyStaff(organizationId, {
-    type: 'sales_activity',
-    title: `BDA · ${input.title}`,
-    body: sales.name,
-    href: '/activity',
-    entityType: 'sales_call',
-    entityId: input.callId,
-    recipientRoles: ['admin'],
-    excludeUserId: req.user!.id,
-  });
+  // Log only — no per-change admin email (hourly BDA digest covers this).
+  await Promise.all([
+    SalesActivityEvent.create({
+      organizationId,
+      type: input.type,
+      title: input.title,
+      actorEmployeeId: sales.employeeId,
+      actorName: sales.name,
+      leadId: input.leadId,
+      metadata: { callId: input.callId, ...input.metadata },
+      createdBy: req.user!.email,
+    }),
+    logActivity(actorFrom(req.user!), {
+      title: `BDA · ${input.title}`,
+      detail: sales.name,
+      entityType: 'sales_call',
+      entityId: input.callId,
+      actionType: input.type,
+      leadId: input.leadId ? String(input.leadId) : undefined,
+      metadata: { callId: input.callId, source: 'bda', ...input.metadata },
+    }),
+  ]);
 }
 
 const PENDING_MS = 10 * 60_000;

@@ -7,6 +7,7 @@ import { route } from '../../../shared/utils/crud.js';
 import { UnauthorizedError, ValidationError } from '../../../shared/errors/index.js';
 import { logger } from '../../../shared/logger/index.js';
 import { runDailyReminders, runDeadlineReminders, recurringPaymentReminders } from '../services/reminders.service.js';
+import { runBdaHourlyDigest } from '../services/bda-digest.service.js';
 
 export const cronRoutes = Router();
 
@@ -18,7 +19,7 @@ function assertCronAuth(header?: string) {
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new UnauthorizedError('Invalid cron secret');
 }
 
-const SLOTS = ['morning', 'evening', 'deadline', 'recurring'] as const;
+const SLOTS = ['morning', 'evening', 'deadline', 'recurring', 'bda_hourly'] as const;
 
 cronRoutes.all(
   '/reminders',
@@ -35,6 +36,7 @@ cronRoutes.all(
         results[org.slug] = await runWithOrganization(id, async () => {
           if (slot === 'morning' || slot === 'evening') return runDailyReminders(id, slot, force);
           if (slot === 'recurring') return recurringPaymentReminders(id);
+          if (slot === 'bda_hourly') return runBdaHourlyDigest(id, force);
           return runDeadlineReminders(id, force);
         });
       } catch (error) {
@@ -43,5 +45,25 @@ cronRoutes.all(
       }
     }
     return { slot, organizations: orgs.length, results };
+  })
+);
+
+cronRoutes.all(
+  '/bda-hourly',
+  route(async (req) => {
+    assertCronAuth(req.headers.authorization);
+    const force = req.query.force === 'true';
+    const orgs = await Organization.find({ isActive: true }).select('_id slug').lean();
+    const results: Record<string, unknown> = {};
+    for (const org of orgs) {
+      const id = String(org._id);
+      try {
+        results[org.slug] = await runWithOrganization(id, () => runBdaHourlyDigest(id, force));
+      } catch (error) {
+        logger.error('BDA hourly digest failed', { org: org.slug, error: (error as Error).message });
+        results[org.slug] = { error: (error as Error).message };
+      }
+    }
+    return { slot: 'bda_hourly', organizations: orgs.length, results };
   })
 );

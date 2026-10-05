@@ -109,33 +109,22 @@ async function logSales(req: AuthenticatedRequest, type: string, title: string, 
   const organizationId = orgOf(req);
   const entityType = salesEntityType(type);
   const entityId = String(extra.leadId || extra.dealId || extra.metadata?.employeeId || extra.metadata?.callId || '');
-  await SalesActivityEvent.create({
-    organizationId, type, title, detail: extra.detail || '', actorEmployeeId: s.employeeId, actorName: s.name,
-    leadId: extra.leadId, dealId: extra.dealId, metadata: extra.metadata || {}, createdBy: req.user!.email,
-  });
-  // Mirror into company Activity so admins see BDA work on /activity.
-  await logActivity(actorFrom(req.user!), {
-    title: `BDA · ${title}`,
-    detail: extra.detail || s.name,
-    entityType,
-    entityId: entityId || undefined,
-    actionType: type,
-    leadId: extra.leadId ? String(extra.leadId) : undefined,
-    metadata: { ...extra.metadata, salesType: type, actorEmployeeId: s.employeeId, source: 'bda' },
-  });
-  // Quiet internal chatter (attendance / daily status) stays off the admin inbox.
-  if (!['attendance_check_in', 'daily_work_status'].includes(type)) {
-    await notifyStaff(organizationId, {
-      type: 'sales_activity',
+  // Activity log only — no per-change email/in-app blast (hourly digest emails admins).
+  await Promise.all([
+    SalesActivityEvent.create({
+      organizationId, type, title, detail: extra.detail || '', actorEmployeeId: s.employeeId, actorName: s.name,
+      leadId: extra.leadId, dealId: extra.dealId, metadata: extra.metadata || {}, createdBy: req.user!.email,
+    }),
+    logActivity(actorFrom(req.user!), {
       title: `BDA · ${title}`,
-      body: extra.detail || `${s.name} updated Sales CRM`,
-      href: '/activity',
+      detail: extra.detail || s.name,
       entityType,
       entityId: entityId || undefined,
-      recipientRoles: ['admin'],
-      excludeUserId: req.user!.id,
-    });
-  }
+      actionType: type,
+      leadId: extra.leadId ? String(extra.leadId) : undefined,
+      metadata: { ...extra.metadata, salesType: type, actorEmployeeId: s.employeeId, source: 'bda' },
+    }),
+  ]);
 }
 
 /** Employees only see their own records; sales admins see everything. */
@@ -242,6 +231,10 @@ salesCrmRoutes.get('/dashboard', route(async (req) => {
     const loads = employees.map((e) => ({ id: String(e._id), name: names.get(String(e._id))?.name, openLeads: open.filter((l) => String(l.assignedEmployeeId || '') === String(e._id)).length }));
     const maxLoad = Math.max(1, ...loads.map((l) => l.openLeads));
     const converted = leads.filter((l) => l.status === 'converted').length;
+    const recentActivity = await SalesActivityEvent.find({
+      organizationId: org,
+      type: { $nin: ['attendance_check_in', 'daily_work_status', 'call_started'] },
+    }).sort({ createdAt: -1 }).limit(30).lean();
     return {
       role: 'admin',
       stats: { activeEmployees, openLeads: open.length, unassigned: open.filter((l) => !l.assignedEmployeeId).length, converted, pendingApprovals, overdueTasks, pendingEga, totalEga },
@@ -249,6 +242,7 @@ salesCrmRoutes.get('/dashboard', route(async (req) => {
       conversionRate: leads.length ? Math.round((converted / leads.length) * 100) : 0,
       workload: loads.map((l) => ({ ...l, pct: l.openLeads === 0 ? 0 : Math.max(20, Math.round((l.openLeads / maxLoad) * 100)) })),
       callAnalytics: await buildCallAnalytics(orgOf(req)),
+      recentActivity,
     };
   }
   const me = oid(s.employeeId);

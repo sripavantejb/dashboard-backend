@@ -9,5 +9,11 @@
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/api" }
+  ],
+  "crons": [
+    {
+      "path": "/api/v1/cron/bda-hourly",
+      "schedule": "5 * * * *"
+    }
   ]
 }
