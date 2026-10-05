@@ -373,6 +373,20 @@ async function main() {
     console.log({ creds, clients, recurring, totals });
   });
 
+  // Production may fail to decrypt the tenant URI and fall back to editco_platform.
+  // Mirror critical collections so dashboards.editcomedia.com still sees the seed.
+  if (!DRY) {
+    const { spawnSync } = await import('node:child_process');
+    const mirrored = spawnSync('npx', ['tsx', 'src/scripts/sync-editco-tenant-to-main.ts'], {
+      cwd: process.cwd(),
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
+    if (mirrored.status !== 0) {
+      console.warn('Tenant→main sync failed — production may still show empty until sync succeeds');
+    }
+  }
+
   await mongoose.disconnect();
 }
 
