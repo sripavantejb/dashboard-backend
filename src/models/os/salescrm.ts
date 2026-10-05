@@ -43,6 +43,7 @@ const leadSchema = osSchema({
   assignedEmployeeId: ref('SalesEmployee', { index: true }),
   territory: str(),
   lastContactedAt: Date,
+  lastCallOutcome: str(),
   nextFollowUpAt: Date,
   notes: str(),
   tags: { type: [String], default: [] },

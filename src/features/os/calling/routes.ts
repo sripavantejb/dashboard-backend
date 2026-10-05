@@ -331,9 +331,18 @@ callingRoutes.post('/sessions/:id/outcome', route(async (req, res) => {
 
   const organizationId = req.user!.organizationId;
   if (call.leadId) {
-    const patch: Record<string, unknown> = { lastContactedAt: now, updatedBy: req.user!.email };
-    if (followUpAt) patch.nextFollowUpAt = followUpAt;
-    await SalesLead.updateOne({ _id: call.leadId, organizationId }, { $set: patch });
+    await SalesLead.updateOne(
+      { _id: call.leadId, organizationId },
+      [{
+        $set: {
+          lastContactedAt: now,
+          lastCallOutcome: body.outcome,
+          updatedBy: req.user!.email,
+          ...(followUpAt ? { nextFollowUpAt: followUpAt } : {}),
+          status: { $cond: [{ $eq: ['$status', 'new'] }, 'contacted', '$status'] },
+        },
+      }],
+    );
   }
   if (followUpAt) {
     await SalesFollowUp.create({

@@ -25,6 +25,7 @@ import { callingRoutes } from '../calling/routes.js';
 import { buildCallAnalytics, loggedCallMatch, withCallerNames } from '../calling/analytics.js';
 import { toDialablePhone } from '../calling/phone.js';
 import { buildBdaTeamActivity } from '../services/sales-team-activity.service.js';
+import { logger } from '../../../shared/logger/index.js';
 
 type ModuleKey = (typeof SALES_MODULES)[number];
 
@@ -104,13 +105,13 @@ function salesEntityType(type: string): string {
   return 'sales';
 }
 
-async function logSales(req: AuthenticatedRequest, type: string, title: string, extra: { detail?: string; leadId?: unknown; dealId?: unknown; metadata?: Record<string, unknown> } = {}) {
+function logSales(req: AuthenticatedRequest, type: string, title: string, extra: { detail?: string; leadId?: unknown; dealId?: unknown; metadata?: Record<string, unknown> } = {}) {
   const s = ctx(req);
   const organizationId = orgOf(req);
   const entityType = salesEntityType(type);
   const entityId = String(extra.leadId || extra.dealId || extra.metadata?.employeeId || extra.metadata?.callId || '');
-  // Activity log only — no per-change email/in-app blast (hourly digest emails admins).
-  await Promise.all([
+  // Do not block the API response on activity writes — row edits must feel instant.
+  void Promise.all([
     SalesActivityEvent.create({
       organizationId, type, title, detail: extra.detail || '', actorEmployeeId: s.employeeId, actorName: s.name,
       leadId: extra.leadId, dealId: extra.dealId, metadata: extra.metadata || {}, createdBy: req.user!.email,
@@ -124,7 +125,7 @@ async function logSales(req: AuthenticatedRequest, type: string, title: string, 
       leadId: extra.leadId ? String(extra.leadId) : undefined,
       metadata: { ...extra.metadata, salesType: type, actorEmployeeId: s.employeeId, source: 'bda' },
     }),
-  ]);
+  ]).catch((error) => logger.error('logSales failed', { error: (error as Error).message, title }));
 }
 
 /** Employees only see their own records; sales admins see everything. */
@@ -697,25 +698,34 @@ salesCrmRoutes.post('/calls', needModule('comm.calls') as never, route(async (re
     req.body
   );
   const s = ctx(req);
-  let phone = '';
-  if (b.leadId) {
-    const lead = await SalesLead.findOne({ _id: b.leadId, organizationId: orgOf(req) }).select('phone').lean();
-    phone = toDialablePhone(lead?.phone)?.e164 || '';
-  }
   const minutes = b.durationMinutes || 0;
-  const call = await SalesCall.create({
-    ...b, leadId: b.leadId || undefined, nextFollowUpAt: b.nextFollowUpAt || undefined, employeeId: s.employeeId,
-    outcome: b.outcome || 'connected', organizationId: orgOf(req), createdBy: req.user!.email,
-    phone, status: 'completed', channel: 'manual', provider: 'device_sim',
-    durationMinutes: minutes, durationSeconds: minutes ? Math.round(minutes * 60) : null,
-    durationSource: minutes ? 'crm_timer' : 'unavailable',
-  });
-  if (b.leadId) await SalesLead.updateOne({ _id: b.leadId, organizationId: orgOf(req) }, { $set: { lastContactedAt: new Date() } });
+  const outcome = b.outcome || 'connected';
+  const now = new Date();
+  const [call] = await Promise.all([
+    SalesCall.create({
+      ...b, leadId: b.leadId || undefined, nextFollowUpAt: b.nextFollowUpAt || undefined, employeeId: s.employeeId,
+      outcome, organizationId: orgOf(req), createdBy: req.user!.email,
+      phone: '', status: 'completed', channel: 'manual', provider: 'device_sim',
+      durationMinutes: minutes, durationSeconds: minutes ? Math.round(minutes * 60) : null,
+      durationSource: minutes ? 'crm_timer' : 'unavailable',
+    }),
+    b.leadId ? SalesLead.updateOne(
+      { _id: b.leadId, organizationId: orgOf(req) },
+      [{
+        $set: {
+          lastContactedAt: now,
+          lastCallOutcome: outcome,
+          updatedBy: req.user!.email,
+          status: { $cond: [{ $eq: ['$status', 'new'] }, 'contacted', '$status'] },
+        },
+      }],
+    ) : Promise.resolve(),
+  ]);
   if (b.nextFollowUpAt) {
     await SalesFollowUp.create({ organizationId: orgOf(req), leadId: b.leadId || undefined, ownerEmployeeId: s.employeeId, type: 'call', dueAt: new Date(b.nextFollowUpAt), notes: b.nextAction || 'Follow-up from call', createdBy: req.user!.email });
     if (b.leadId) await SalesLead.updateOne({ _id: b.leadId }, { $set: { nextFollowUpAt: new Date(b.nextFollowUpAt) } });
   }
-  await logSales(req, 'call_logged', `Call logged (${call.outcome})`, { leadId: call.leadId, metadata: { callId: String(call._id) } });
+  logSales(req, 'call_logged', `Call logged (${call.outcome})`, { leadId: call.leadId, metadata: { callId: String(call._id) } });
   res.status(201);
   return call;
 }));
