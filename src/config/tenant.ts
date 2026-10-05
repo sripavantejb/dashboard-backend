@@ -161,6 +161,15 @@ async function buildIndexes(conn: Connection, organizationId: string) {
 }
 
 export async function connectionForOrganization(organizationId?: string): Promise<Connection> {
+  // Single-database mode: every company reads/writes the shared platform MongoDB.
+  // Per-organization dedicated databases are disabled — they caused split-brain where
+  // seeds landed in editco_media while production fell back to empty editco_platform.
+  void organizationId;
+  return mongoose.connection;
+}
+
+/** @deprecated Dedicated DBs are disabled; always reports shared. */
+export async function connectionForOrganizationLegacy(organizationId?: string): Promise<Connection> {
   if (!organizationId) return mongoose.connection;
   const config = await orgDatabaseConfig(organizationId);
   if (!config.uri) return mongoose.connection;

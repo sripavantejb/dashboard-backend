@@ -1,16 +1,17 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { Organization } from '../../../models/Organization.js';
 import { route, parseBody, isObjectId } from '../../../shared/utils/crud.js';
 import { NotFoundError, ValidationError } from '../../../shared/errors/index.js';
-import { encryptData, maskMongoUri } from '../../../shared/utils/crypto.js';
+import { maskMongoUri } from '../../../shared/utils/crypto.js';
 import { databaseUsage, forgetUsage } from '../services/usage.service.js';
-import { connectionForOrganization, invalidateOrganizationConnection, testMongoConnection, tenantDatabaseStatus } from '../../../config/tenant.js';
+import { invalidateOrganizationConnection, testMongoConnection } from '../../../config/tenant.js';
 
 /**
  * Mounted under `/admin/organizations/:id/database` — platform super_admin only.
- * Company admins have no API or UI to attach a dedicated MongoDB; business data stays on the
- * shared platform database until a platform admin connects one here. The URI is write-only.
+ * Single-database mode: every company uses the shared platform MongoDB. Connecting a
+ * dedicated per-company database is disabled.
  */
 export const organizationDatabaseRoutes = Router({ mergeParams: true });
 
@@ -27,15 +28,16 @@ async function loadOrg(id: string) {
 }
 
 function publicDatabase(org: { _id: unknown; database?: Record<string, unknown> }) {
-  const db = org.database || {};
+  // Dedicated DBs are disabled — always report shared platform mode.
+  void org.database;
   return {
-    enabled: Boolean(db.enabled),
-    dbName: db.dbName || '',
-    hint: db.hint || '',
-    status: db.status || 'unconfigured',
-    lastCheckedAt: db.lastCheckedAt || null,
-    lastError: db.lastError || '',
-    runtime: tenantDatabaseStatus(String(org._id)),
+    enabled: false,
+    dbName: '',
+    hint: '',
+    status: 'unconfigured' as const,
+    lastCheckedAt: null,
+    lastError: '',
+    runtime: 'shared' as const,
   };
 }
 
@@ -78,47 +80,27 @@ organizationDatabaseRoutes.post(
 
 organizationDatabaseRoutes.put(
   '/',
-  route(async (req) => {
-    const org = await loadOrg(req.params.id as string);
-    const body = parseBody<z.infer<typeof uriSchema>>(uriSchema, req.body);
-    const dbName = body.dbName || org.slug;
-    await probe(body.uri, dbName);
-    const enc = encryptData(body.uri)!;
-    await Organization.updateOne(
-      { _id: org._id },
-      {
-        $set: {
-          'database.enabled': true, 'database.uriCipher': enc.cipher, 'database.uriIv': enc.iv, 'database.uriTag': enc.tag,
-          'database.dbName': dbName, 'database.hint': maskMongoUri(body.uri), 'database.status': 'connected',
-          'database.lastCheckedAt': new Date(), 'database.lastError': '', 'database.updatedBy': req.user!.email,
-        },
-      }
+  route(async () => {
+    throw new ValidationError(
+      'Dedicated per-company databases are disabled. All companies use the single shared platform database.'
     );
-    await invalidateOrganizationConnection(String(org._id));
-    forgetUsage(String(org._id));
-    return publicDatabase((await loadOrg(String(org._id))).toObject());
   })
 );
 
 organizationDatabaseRoutes.post(
   '/check',
   route(async (req) => {
-    const org = await Organization.findById(req.params.id).select('+database.uriCipher +database.uriIv +database.uriTag');
-    if (!org) throw new NotFoundError('Organization');
-    if (!org.database?.enabled) throw new ValidationError('No dedicated database configured');
-    let status: 'connected' | 'error' = 'connected';
-    let lastError = '';
+    const org = await loadOrg(req.params.id as string);
+    // Single-DB mode — ping the shared platform connection.
     try {
-      await invalidateOrganizationConnection(String(org._id));
-    forgetUsage(String(org._id));
-      const conn = await connectionForOrganization(String(org._id));
-      await conn.db!.admin().ping();
+      await mongoose.connection.db!.admin().ping();
     } catch (error) {
-      status = 'error';
-      lastError = ((error as Error).message || 'Connection failed').replace(/\/\/[^@\s]+@/g, '//****@');
+      throw new ValidationError(
+        `Shared database unreachable: ${((error as Error).message || 'Connection failed').replace(/\/\/[^@\s]+@/g, '//****@')}`
+      );
     }
-    await Organization.updateOne({ _id: org._id }, { $set: { 'database.status': status, 'database.lastCheckedAt': new Date(), 'database.lastError': lastError } });
-    return publicDatabase((await loadOrg(String(org._id))).toObject());
+    forgetUsage(String(org._id));
+    return publicDatabase(org.toObject());
   })
 );
 
