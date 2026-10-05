@@ -556,7 +556,7 @@ salesCrmRoutes.delete('/leads/:id', needModule('leads.management') as never, rou
   lead.recordStatus = 'archived';
   lead.updatedBy = req.user!.email;
   await lead.save();
-  await logSales(req, 'lead_updated', 'Lead archived', { leadId: lead._id });
+  logSales(req, 'lead_updated', 'Lead deleted', { leadId: lead._id });
   return { id: String(lead._id) };
 }));
 
@@ -1380,15 +1380,17 @@ salesCrmRoutes.delete('/targets/:id', needAdmin as never, route(async (req) => {
 
 async function stageTargetRows(organizationId: string, employeeId?: string) {
   const org = organizationId;
-  const { start: periodStart, end: periodEnd } = istDayBounds();
+  const { date, start: periodStart, end: periodEnd } = istDayBounds();
   const employees = await SalesEmployee.find({
     organizationId: org,
     status: 'active',
-    isSalesAdmin: false,
+    isSalesAdmin: { $ne: true },
     recordStatus: { $ne: 'archived' },
     ...(employeeId && isObjectId(employeeId) ? { _id: employeeId } : {}),
   }).lean();
   const names = await employeeNames(org, employees);
+  // Prefer today's saved row; otherwise fall back to the latest prior template so admin-set
+  // targets stay visible on the BDA portal until they are changed again.
   const targets = await SalesStageTarget.find({
     organizationId: org,
     recordStatus: 'active',
@@ -1415,15 +1417,20 @@ async function stageTargetRows(organizationId: string, employeeId?: string) {
     const mine = leads.filter((l) => String(l.assignedEmployeeId) === id);
     const actual = Object.fromEntries(SALES_LEAD_STATUSES.map((st) => [st, mine.filter((l) => l.status === st).length]));
     const stages = Object.fromEntries(SALES_LEAD_STATUSES.map((st) => [st, Number((target?.stages as Record<string, number> | undefined)?.[st] || 0)]));
+    const targetTotal = Object.values(stages).reduce((s, n) => s + n, 0);
+    const actualTotal = Object.values(actual).reduce((s, n) => s + n, 0);
     return {
       employeeId: id,
       name: names.get(id)?.name || e.employeeCode,
       employeeCode: e.employeeCode,
-      periodStart,
-      periodEnd,
+      date,
+      periodStart: target?.periodStart || periodStart,
+      periodEnd: target?.periodEnd || periodEnd,
       period: 'daily',
       stages,
       actual,
+      targetTotal,
+      actualTotal,
       targetId: target ? String(target._id) : null,
     };
   });
@@ -1445,13 +1452,15 @@ salesCrmRoutes.put('/stage-targets', needAdmin as never, route(async (req) => {
     }),
     req.body
   );
-  if (!(await SalesEmployee.exists({ _id: b.employeeId, organizationId: orgOf(req), isSalesAdmin: false }))) {
+  if (!(await SalesEmployee.exists({ _id: b.employeeId, organizationId: orgOf(req), isSalesAdmin: { $ne: true } }))) {
     throw new ValidationError('Choose a BDA / sales employee');
   }
   const { start: periodStart, end: periodEnd } = istDayBounds();
   const stages = Object.fromEntries(
     SALES_LEAD_STATUSES.map((st) => [st, Math.max(0, Math.floor(Number(b.stages?.[st] ?? 0) || 0))])
   );
+  // Upsert today + keep a rolling "current" row keyed on periodStart so BDA portals always
+  // resolve the latest admin-set stage goals.
   return SalesStageTarget.findOneAndUpdate(
     { organizationId: orgOf(req), employeeId: b.employeeId, periodStart },
     {

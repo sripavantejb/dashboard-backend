@@ -64,8 +64,14 @@ describe('BDA activity mirror', () => {
     }));
     expect(lead._id || lead.id).toBeTruthy();
 
-    const events = await admin.ok(admin.get('/os/activity?limit=50'));
-    const list = Array.isArray(events) ? events : [];
-    expect(list.some((e: any) => String(e.title || '').includes('BDA') && String(e.title || '').toLowerCase().includes('lead'))).toBe(true);
+    // Activity mirroring is async (non-blocking on the write path).
+    let found = false;
+    for (let i = 0; i < 20 && !found; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const events = await admin.ok(admin.get('/os/activity?limit=50'));
+      const list = Array.isArray(events) ? events : [];
+      found = list.some((e: any) => String(e.title || '').includes('BDA') && String(e.title || '').toLowerCase().includes('lead'));
+    }
+    expect(found).toBe(true);
   });
 });

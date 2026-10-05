@@ -8,6 +8,7 @@ import { authenticate, authorize } from '../../../shared/middleware/auth.js';
 import { crudRouter, route, parseBody } from '../../../shared/utils/crud.js';
 import { NotFoundError, ValidationError } from '../../../shared/errors/index.js';
 import { permissionsAllow } from '../../../shared/types/index.js';
+import { notifyStaff } from '../../../shared/os/activity.js';
 
 const MAX_FILE = 6 * 1024 * 1024;
 const filePrepare = (data: Record<string, unknown>) => {
@@ -127,6 +128,10 @@ function leaveDays(start: Date, end: Date) {
   return Math.max(1, Math.round((+end - +start) / 86_400_000) + 1);
 }
 
+function leaveDateLabel(d: Date) {
+  return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+}
+
 export const leaveRoutes = Router();
 leaveRoutes.use(authenticate);
 
@@ -147,11 +152,25 @@ leaveRoutes.post('/', authorize('leaves:write'), route(async (req, res) => {
   const endDate = new Date(b.endDate);
   if (endDate < startDate) throw new ValidationError('End date must be after start date');
   const user = await User.findById(req.user!.id).select('firstName lastName').lean();
+  const employeeName = user ? `${user.firstName} ${user.lastName}`.trim() : req.user!.name;
   const row = await LeaveRequest.create({
     organizationId: req.user!.organizationId, userId: req.user!.id,
-    employeeName: user ? `${user.firstName} ${user.lastName}`.trim() : req.user!.name,
+    employeeName,
     type: b.type || 'casual', startDate, endDate, days: leaveDays(startDate, endDate), reason: b.reason || '',
     createdBy: req.user!.email, updatedBy: req.user!.email,
+  });
+  const range = `${leaveDateLabel(startDate)} – ${leaveDateLabel(endDate)} (${row.days}d)`;
+  await notifyStaff(req.user!.organizationId, {
+    type: 'leave_request',
+    title: `Leave request: ${employeeName}`,
+    body: `${row.type} · ${range}${row.reason ? ` · ${row.reason}` : ''}`,
+    href: '/leave',
+    entityType: 'leave_request',
+    entityId: String(row._id),
+    recipientRoles: ['admin', 'hr', 'manager'],
+    excludeUserId: req.user!.id,
+    sticky: true,
+    email: false,
   });
   res.status(201);
   return row;
@@ -169,6 +188,19 @@ leaveRoutes.post('/:id/decide', authorize('leaves:write'), route(async (req) => 
   row.decidedAt = new Date();
   row.updatedBy = req.user!.email;
   await row.save();
+  if (row.userId) {
+    await notifyStaff(req.user!.organizationId, {
+      type: 'leave_decision',
+      title: `Leave ${status}: ${row.employeeName || 'your request'}`,
+      body: `${row.type} · ${leaveDateLabel(row.startDate)} – ${leaveDateLabel(row.endDate)}${row.reviewerComment ? ` · ${row.reviewerComment}` : ''}`,
+      href: '/leave',
+      entityType: 'leave_request',
+      entityId: String(row._id),
+      recipientUserIds: [String(row.userId)],
+      sticky: true,
+      email: false,
+    });
+  }
   return row;
 }));
 

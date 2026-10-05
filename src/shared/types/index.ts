@@ -48,6 +48,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     'vendors:read', 'projects:read', 'meetings:read', 'dashboard:read', 'notifications:read',
     'search:read', 'services:read', 'analytics:read', 'vault:read', 'vault:write', 'activity:read',
     'tasks:read', 'tasks:write', 'categories:read', 'contacts:*', 'companies:*',
+    'leaves:read', 'leaves:write',
   ],
   project_manager: [
     'projects:*', 'meetings:*', 'tasks:*', 'documents:*', 'milestones:*', 'project_updates:*',

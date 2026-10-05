@@ -42,7 +42,7 @@ describe('sales employee', () => {
 
   beforeAll(async () => {
     await admin.ok(admin.post('/sales-crm/employees', EMPLOYEE));
-    const { accessToken } = await admin.ok(t.api.post('/auth/login', { email: EMPLOYEE.email, password: EMPLOYEE.password }));
+    const { accessToken } = await admin.ok(t.api.post('/auth/bda/editco-media/login', { email: EMPLOYEE.email, password: EMPLOYEE.password }));
     employee = t.api.as(accessToken);
   });
 
