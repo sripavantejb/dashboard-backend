@@ -25,6 +25,7 @@ import { callingRoutes } from '../calling/routes.js';
 import { buildCallAnalytics, loggedCallMatch, withCallerNames } from '../calling/analytics.js';
 import { toDialablePhone } from '../calling/phone.js';
 import { buildBdaTeamActivity } from '../services/sales-team-activity.service.js';
+import { buildSalesLeadImportTemplate, importSalesLeadsFromCsv } from '../services/sales-lead-import.service.js';
 import { logger } from '../../../shared/logger/index.js';
 
 type ModuleKey = (typeof SALES_MODULES)[number];
@@ -183,7 +184,7 @@ salesCrmRoutes.get('/my-day', route(async (req) => {
     SalesTask.find({ organizationId: org, recordStatus: 'active', status: { $ne: 'completed' }, dueDate: { $lt: todayStart }, ...ownerScope }).sort({ dueDate: 1 }).limit(20).lean(),
     SalesTask.find({ organizationId: org, recordStatus: 'active', status: { $ne: 'completed' }, ...ownerScope }).sort({ dueDate: 1, createdAt: -1 }).limit(30).lean(),
     SalesLead.find({ organizationId: org, recordStatus: 'active', status: { $nin: ['converted', 'lost'] }, temperature: { $in: ['hot', 'warm'] }, ...leadScope }).sort({ updatedAt: -1 }).limit(12).lean(),
-    SalesCall.find({ organizationId: org, calledAt: { $gte: todayStart, $lt: todayEnd }, ...callScope }).sort({ calledAt: -1 }).limit(20).lean(),
+    SalesCall.find({ organizationId: org, recordStatus: 'active', calledAt: { $gte: todayStart, $lt: todayEnd }, ...callScope }).sort({ calledAt: -1 }).limit(20).lean(),
     SalesLead.countDocuments({ organizationId: org, recordStatus: 'active', status: { $nin: ['converted', 'lost'] }, ...leadScope }),
     s.isSalesAdmin
       ? SalesApproval.countDocuments({ organizationId: org, status: 'pending' })
@@ -475,6 +476,31 @@ salesCrmRoutes.post('/leads', needModule('leads.management') as never, route(asy
   return lead;
 }));
 
+salesCrmRoutes.get('/leads/import/template', needModule('leads.management') as never, route(async () => buildSalesLeadImportTemplate()));
+
+salesCrmRoutes.post('/leads/import', needModule('leads.management') as never, route(async (req) => {
+  const s = ctx(req);
+  const body = parseBody<{ csv: string; duplicateStrategy?: 'skip' | 'update' }>(
+    z.object({
+      csv: z.string().min(10, 'Paste or upload a CSV file'),
+      duplicateStrategy: z.enum(['skip', 'update']).optional(),
+    }),
+    req.body,
+  );
+  const result = await importSalesLeadsFromCsv({
+    organizationId: orgOf(req),
+    csv: body.csv,
+    duplicateStrategy: body.duplicateStrategy || 'skip',
+    assignedEmployeeId: s.isSalesAdmin ? undefined : s.employeeId,
+    actorEmail: req.user!.email,
+  });
+  logSales(req, 'lead_created', `Bulk imported ${result.imported} lead${result.imported === 1 ? '' : 's'}`, {
+    detail: `updated ${result.updated}, skipped ${result.skipped}, failed ${result.failed}`,
+    metadata: { imported: result.imported, updated: result.updated, skipped: result.skipped, failed: result.failed },
+  });
+  return result;
+}));
+
 salesCrmRoutes.get('/leads/:id', needModule('leads.management') as never, route(async (req) => {
   const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
   const org = orgOf(req);
@@ -491,23 +517,26 @@ salesCrmRoutes.get('/leads/:id', needModule('leads.management') as never, route(
 }));
 
 salesCrmRoutes.patch('/leads/:id', needModule('leads.management') as never, route(async (req) => {
-  const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
   const input = parseBody<Partial<z.infer<typeof leadSchema>>>(leadSchema.partial(), req.body);
+  const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
   Object.assign(lead, input, { updatedBy: req.user!.email });
   await lead.save();
-  await logSales(req, 'lead_updated', 'Lead details updated', { leadId: lead._id });
+  const keys = Object.keys(input);
+  const quiet = keys.length > 0 && keys.every((k) => ['temperature', 'notes', 'priority'].includes(k));
+  if (!quiet) logSales(req, 'lead_updated', 'Lead details updated', { leadId: lead._id });
   return lead;
 }));
 
 salesCrmRoutes.post('/leads/:id/status', needModule('leads.management') as never, route(async (req) => {
-  const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
   const status = z.enum(SALES_LEAD_STATUSES).parse(req.body?.status);
+  const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
   const prev = lead.status;
+  if (prev === status) return lead;
   lead.status = status;
   if (status === 'contacted' && !lead.lastContactedAt) lead.lastContactedAt = new Date();
   lead.updatedBy = req.user!.email;
   await lead.save();
-  await logSales(req, 'lead_updated', `Lead moved from ${prev} to ${status}`, { leadId: lead._id });
+  logSales(req, 'lead_updated', `Lead moved from ${prev} to ${status}`, { leadId: lead._id });
   return lead;
 }));
 
@@ -553,9 +582,23 @@ salesCrmRoutes.post('/leads/:id/assign', needAdmin as never, route(async (req) =
 
 salesCrmRoutes.delete('/leads/:id', needModule('leads.management') as never, route(async (req) => {
   const lead = await findOwned(SalesLead, req, req.params.id as string, 'assignedEmployeeId');
+  const org = orgOf(req);
+  const leadId = lead._id;
+  const by = req.user!.email;
   lead.recordStatus = 'archived';
-  lead.updatedBy = req.user!.email;
+  lead.updatedBy = by;
   await lead.save();
+  // Drop related activity so call/follow-up analytics go to zero with the lead.
+  const archive = { $set: { recordStatus: 'archived', updatedBy: by } };
+  const tied = { organizationId: org, leadId, recordStatus: 'active' };
+  await Promise.all([
+    SalesCall.updateMany(tied, archive),
+    SalesFollowUp.updateMany(tied, archive),
+    SalesMeeting.updateMany(tied, archive),
+    SalesDeal.updateMany(tied, archive),
+    SalesMessage.updateMany(tied, archive),
+    SalesTask.updateMany(tied, archive),
+  ]);
   logSales(req, 'lead_updated', 'Lead deleted', { leadId: lead._id });
   return { id: String(lead._id) };
 }));

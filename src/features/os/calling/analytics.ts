@@ -1,7 +1,31 @@
-import { SalesCall, SalesEmployee, User } from '../../../models/index.js';
+import { SalesCall, SalesEmployee, SalesLead, User } from '../../../models/index.js';
 import { SALES_CONNECTED_CALL_OUTCOMES } from '../../../shared/constants/os.js';
 
 const CONNECTED = new Set<string>(SALES_CONNECTED_CALL_OUTCOMES);
+
+/** Drop calls tied to archived/deleted leads so dashboard stats clear with the lead. */
+async function callsForActiveLeads<T extends { _id?: unknown; leadId?: unknown }>(organizationId: string, calls: T[]) {
+  const leadIds = [...new Set(calls.map((c) => String(c.leadId || '')).filter(Boolean))];
+  if (!leadIds.length) return calls.filter((c) => !c.leadId);
+  const active = await SalesLead.find({
+    organizationId,
+    _id: { $in: leadIds },
+    recordStatus: 'active',
+  }).select('_id').lean();
+  const live = new Set(active.map((l) => String(l._id)));
+  const orphanIds = calls
+    .filter((c) => c.leadId && !live.has(String(c.leadId)))
+    .map((c) => c._id)
+    .filter(Boolean);
+  if (orphanIds.length) {
+    // Heal older deletes that only archived the lead and left call rows active.
+    void SalesCall.updateMany(
+      { organizationId, _id: { $in: orphanIds }, recordStatus: 'active' },
+      { $set: { recordStatus: 'archived' } },
+    );
+  }
+  return calls.filter((c) => !c.leadId || live.has(String(c.leadId)));
+}
 
 export function loggedCallMatch() {
   return {
@@ -38,7 +62,8 @@ export async function buildCallAnalytics(organizationId: string, employeeId?: st
   };
   if (employeeId) filter.employeeId = employeeId;
 
-  const calls = await SalesCall.find(filter).select('outcome durationSeconds durationMinutes employeeId leadId nextFollowUpAt').lean();
+  const rawCalls = await SalesCall.find(filter).select('outcome durationSeconds durationMinutes employeeId leadId nextFollowUpAt').lean();
+  const calls = await callsForActiveLeads(organizationId, rawCalls);
   const interestedLeads = new Set<string>();
   const byEmp = new Map<string, number>();
   let duration = 0;

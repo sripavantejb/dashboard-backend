@@ -117,4 +117,27 @@ describe('sales employee', () => {
     expect(text).toContain('Mine');
     expect(text).not.toContain('CRM Lead');
   });
+
+  it('bulk imports leads from the sample CSV template', async () => {
+    const template = await employee.ok(employee.get('/sales-crm/leads/import/template'));
+    expect(template.csv).toContain('contactPerson');
+    expect(template.columns.some((c: { key: string; required: boolean }) => c.key === 'contactPerson' && c.required)).toBe(true);
+
+    const result = await employee.ok(employee.post('/sales-crm/leads/import', {
+      csv: template.csv,
+      duplicateStrategy: 'skip',
+    }));
+    expect(result.imported).toBeGreaterThanOrEqual(3);
+    expect(result.failed).toBe(0);
+
+    const leads = await employee.ok(employee.get('/sales-crm/leads?search=Priya'));
+    expect(JSON.stringify(leads)).toContain('Priya Sharma');
+    expect(JSON.stringify(leads)).toContain('Sunrise Clinics');
+
+    const again = await employee.ok(employee.post('/sales-crm/leads/import', {
+      csv: template.csv,
+      duplicateStrategy: 'skip',
+    }));
+    expect(again.skipped).toBeGreaterThanOrEqual(3);
+  });
 });
