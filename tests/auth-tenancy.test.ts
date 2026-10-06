@@ -70,30 +70,16 @@ describe('company database (tenancy)', () => {
     expect((await admin.get(`/admin/organizations/${orgId}/database/usage`)).status).toBe(403);
   });
 
-  it('moves business data to the dedicated database and never echoes the URI', async () => {
+  it('keeps every company on the shared platform database', async () => {
     const leadsBefore = await admin.ok(admin.get('/leads'));
     expect(leadsBefore.length).toBeGreaterThan(0);
 
-    const tenantDb = `${t.dbName}_tenant`;
-    await superAdmin.ok(superAdmin.post(`/admin/organizations/${orgId}/database/test`, { uri: t.mongoUri, dbName: tenantDb }));
-    const saved = await superAdmin.ok(superAdmin.put(`/admin/organizations/${orgId}/database`, { uri: t.mongoUri, dbName: tenantDb }));
-    expect(saved).toMatchObject({ enabled: true, status: 'connected', dbName: tenantDb });
-    expect(JSON.stringify(saved)).not.toContain('uriCipher');
+    const blocked = await superAdmin.put(`/admin/organizations/${orgId}/database`, { uri: t.mongoUri, dbName: `${t.dbName}_tenant` });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body?.error?.message || '').toMatch(/shared platform database/i);
 
-    expect(await admin.ok(admin.get('/leads'))).toHaveLength(0);
-    await admin.ok(admin.post('/lead-categories', { name: 'Tenant Cat' }));
-    // Logins still resolve from the platform database.
-    await t.api.login('admin');
-
-    const usage = await superAdmin.ok(superAdmin.get(`/admin/organizations/${orgId}/database/usage?fresh=1`));
-    expect(usage).toMatchObject({ mode: 'dedicated', dbName: tenantDb, documents: 1 });
-    expect(usage.database.collections).toBeGreaterThanOrEqual(1);
-
-    const checked = await superAdmin.ok(superAdmin.post(`/admin/organizations/${orgId}/database/check`));
-    expect(checked.status).toBe('connected');
-
-    const detached = await superAdmin.ok(superAdmin.delete(`/admin/organizations/${orgId}/database`));
-    expect(detached.enabled).toBe(false);
+    const info = await superAdmin.ok(superAdmin.get(`/admin/organizations/${orgId}/database`));
+    expect(info).toMatchObject({ enabled: false, status: 'unconfigured', runtime: 'shared' });
     expect((await admin.ok(admin.get('/leads'))).length).toBe(leadsBefore.length);
   });
 });

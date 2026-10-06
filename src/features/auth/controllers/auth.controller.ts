@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { authService } from '../services/auth.service.js';
 import { AuthenticatedRequest } from '../../../shared/types/index.js';
+import { env } from '../../../config/env.js';
+import { durationToMs } from '../../../shared/utils/jwt.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -9,7 +11,7 @@ function refreshCookieOptions() {
     httpOnly: true,
     secure: isProduction,
     sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: durationToMs(env.JWT_REFRESH_EXPIRY, 90 * 24 * 60 * 60 * 1000),
   };
 }
 

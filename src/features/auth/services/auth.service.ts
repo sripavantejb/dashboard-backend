@@ -1,6 +1,7 @@
 import { User, Organization, RefreshToken, RegistrationInvite, SalesEmployee, getPlatformSettings } from '../../../models/index.js';
+import { env } from '../../../config/env.js';
 import { runWithOrganization } from '../../../config/tenant.js';
-import { hashPassword, comparePassword, signAccessToken, signRefreshToken } from '../../../shared/utils/jwt.js';
+import { hashPassword, comparePassword, signAccessToken, signRefreshToken, durationToMs } from '../../../shared/utils/jwt.js';
 import { ConflictError, UnauthorizedError, NotFoundError, ForbiddenError } from '../../../shared/errors/index.js';
 import { permissionsForRole } from '../../../shared/types/index.js';
 import type { UserRole } from '../../../shared/types/index.js';
@@ -247,9 +248,7 @@ export class AuthService {
 
     const accessToken = signAccessToken(payload);
     const refreshToken = signRefreshToken(user._id.toString());
-
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    const expiresAt = new Date(Date.now() + durationToMs(env.JWT_REFRESH_EXPIRY, 90 * 24 * 60 * 60 * 1000));
 
     await RefreshToken.create({
       userId: user._id,
