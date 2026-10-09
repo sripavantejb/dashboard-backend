@@ -579,7 +579,7 @@ transactionRoutes.get(
     ]);
     const emails = new Set<string>();
     for (const t of rows) {
-      for (const email of [t.createdBy, t.updatedBy, t.deletedBy, ...(t.history || []).map((h) => h.by)]) {
+      for (const email of [t.createdBy, t.updatedBy, t.deletedBy, ...(t.history || []).map((h: OsDoc) => h.by)]) {
         if (email) emails.add(email);
       }
     }
@@ -591,10 +591,10 @@ transactionRoutes.get(
     };
     const ledger = [
       ...rows.map((t) => {
-        const deletion = (t.history || []).find((h) => h.action === 'deleted');
+        const deletion = (t.history || []).find((h: OsDoc) => h.action === 'deleted');
         const deleted = t.recordStatus === 'archived';
         return {
-          id: String(t._id), source: 'transactions', type: t.type, title: t.title, category: t.category, amount: t.amount, date: t.date, party: t.party, method: t.paymentMethod, reference: t.reference, notes: t.notes, history: (t.history || []).map((h) => ({ ...h, by: nameOf(h.by) })),
+          id: String(t._id), source: 'transactions', type: t.type, title: t.title, category: t.category, amount: t.amount, date: t.date, party: t.party, method: t.paymentMethod, reference: t.reference, notes: t.notes, history: (t.history || []).map((h: OsDoc) => ({ ...h, by: nameOf(h.by) })),
           createdBy: nameOf(t.createdBy), deleted, deletedBy: deleted ? nameOf(t.deletedBy || deletion?.by) : '', deletedAt: deleted ? t.deletedAt || deletion?.at || null : null,
         };
       }),
