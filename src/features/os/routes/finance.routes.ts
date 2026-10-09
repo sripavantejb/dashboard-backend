@@ -569,7 +569,7 @@ transactionRoutes.get(
     const q = req.query as Record<string, string>;
     const orgId = oid(req.user!.organizationId);
     const range = monthRange(q.month);
-    const filter: Record<string, unknown> = { organizationId: orgId, recordStatus: 'active' };
+    const filter: Record<string, unknown> = { organizationId: orgId, recordStatus: { $in: ['active', 'archived'] } };
     if (q.type && (TRANSACTION_TYPES as readonly string[]).includes(q.type)) filter.type = q.type;
     if (range) filter.date = range;
     const [rows, manual, invoices] = await Promise.all([
@@ -577,17 +577,49 @@ transactionRoutes.get(
       q.source && q.source !== 'manual' && q.source !== 'all' ? [] : q.type === 'expense' ? [] : ManualRevenue.find({ organizationId: orgId, recordStatus: 'active', ...(range ? { receivedAt: range } : {}) }).sort({ receivedAt: -1 }).lean(),
       q.source && q.source !== 'invoices' && q.source !== 'all' ? [] : q.type === 'expense' ? [] : Payment.find({ organizationId: orgId, recordStatus: 'active', ...(range ? { paidAt: range } : {}) }).populate('invoiceId', 'invoiceNumber billToName').sort({ paidAt: -1 }).lean(),
     ]);
+    const emails = new Set<string>();
+    for (const t of rows) {
+      for (const email of [t.createdBy, t.updatedBy, t.deletedBy, ...(t.history || []).map((h) => h.by)]) {
+        if (email) emails.add(email);
+      }
+    }
+    const staff = emails.size ? await User.find({ email: { $in: [...emails] } }).select('email firstName lastName').lean() : [];
+    const nameOf = (email?: string | null) => {
+      if (!email) return '';
+      const u = staff.find((s) => s.email === email);
+      return u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() || email : email;
+    };
     const ledger = [
-      ...rows.map((t) => ({ id: String(t._id), source: 'transactions', type: t.type, title: t.title, category: t.category, amount: t.amount, date: t.date, party: t.party, method: t.paymentMethod, reference: t.reference, notes: t.notes, history: t.history, createdBy: t.createdBy })),
-      ...manual.map((m) => ({ id: String(m._id), source: 'manual', type: 'income', title: m.source, category: 'Manual revenue', amount: m.amount, date: m.receivedAt, party: '', method: m.paymentMethod, reference: m.reference, notes: m.notes || m.description, history: m.history, createdBy: m.createdBy })),
+      ...rows.map((t) => {
+        const deletion = (t.history || []).find((h) => h.action === 'deleted');
+        const deleted = t.recordStatus === 'archived';
+        return {
+          id: String(t._id), source: 'transactions', type: t.type, title: t.title, category: t.category, amount: t.amount, date: t.date, party: t.party, method: t.paymentMethod, reference: t.reference, notes: t.notes, history: (t.history || []).map((h) => ({ ...h, by: nameOf(h.by) })),
+          createdBy: nameOf(t.createdBy), deleted, deletedBy: deleted ? nameOf(t.deletedBy || deletion?.by) : '', deletedAt: deleted ? t.deletedAt || deletion?.at || null : null,
+        };
+      }),
+      ...manual.map((m) => ({ id: String(m._id), source: 'manual', type: 'income' as const, title: m.source, category: 'Manual revenue', amount: m.amount, date: m.receivedAt, party: '', method: m.paymentMethod, reference: m.reference, notes: m.notes || m.description, history: m.history, createdBy: m.createdBy, deleted: false, deletedBy: '', deletedAt: null })),
       ...invoices.map((p) => {
         const inv = p.invoiceId as unknown as OsDoc | null;
-        return { id: String(p._id), source: 'invoices', type: 'income', title: inv?.billToName || 'Invoice payment', category: inv?.invoiceNumber || '', amount: p.amount, date: p.paidAt, party: inv?.billToName || '', method: p.method, reference: p.reference, notes: p.notes, history: [], createdBy: p.createdBy };
+        return { id: String(p._id), source: 'invoices', type: 'income' as const, title: inv?.billToName || 'Invoice payment', category: inv?.invoiceNumber || '', amount: p.amount, date: p.paidAt, party: inv?.billToName || '', method: p.method, reference: p.reference, notes: p.notes, history: [], createdBy: p.createdBy, deleted: false, deletedBy: '', deletedAt: null };
       }),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    const income = ledger.filter((l) => l.type === 'income').reduce((s, l) => s + l.amount, 0);
-    const spent = ledger.filter((l) => l.type === 'expense').reduce((s, l) => s + l.amount, 0);
-    return { rows: ledger, totals: { income, spent, net: income - spent } };
+    const chronological = [...ledger].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
+    let balance = 0;
+    const remainingById = new Map<string, number | null>();
+    for (const row of chronological) {
+      if (row.deleted) {
+        remainingById.set(row.id, null);
+        continue;
+      }
+      balance += row.type === 'expense' ? -row.amount : row.amount;
+      remainingById.set(row.id, balance);
+    }
+    const live = ledger.filter((l) => !l.deleted);
+    const income = live.filter((l) => l.type === 'income').reduce((s, l) => s + l.amount, 0);
+    const spent = live.filter((l) => l.type === 'expense').reduce((s, l) => s + l.amount, 0);
+    const remaining = income - spent;
+    return { rows: ledger.map((row) => ({ ...row, remaining: remainingById.get(row.id) ?? null })), totals: { income, spent, net: remaining, remaining } };
   })
 );
 
@@ -610,6 +642,32 @@ transactionRoutes.post(
     });
     res.status(201);
     return row;
+  })
+);
+
+transactionRoutes.delete(
+  '/:id',
+  authorize('payments:write'),
+  route(async (req) => {
+    const actor = actorFrom(req.user!);
+    if (!isObjectId(req.params.id)) throw new NotFoundError('Transaction');
+    const row = await Transaction.findOne({ _id: req.params.id, organizationId: actor.organizationId, recordStatus: 'active' });
+    if (!row) throw new NotFoundError('Transaction');
+    const at = new Date();
+    row.recordStatus = 'archived';
+    row.deletedBy = actor.email;
+    row.deletedAt = at;
+    row.updatedBy = actor.email;
+    row.history.push({ action: 'deleted', changes: [], by: actor.email, at });
+    await row.save();
+    const label = row.type === 'income' ? 'Income' : 'Spent';
+    const title = `Transaction deleted: ${row.title} · ${inr(row.amount)}`;
+    await logActivity(actor, { title, detail: `${label} · ${fmtDate(row.date)} · deleted by ${actor.name || actor.email}`, entityType: 'transaction', entityId: String(row._id) });
+    await sendFinanceAlert({
+      title, actor, eyebrow: 'Transactions', href: '/transactions',
+      lines: [['Type', label], ['Amount', inr(row.amount)], ['Date', fmtDate(row.date)], ['Deleted by', actor.name || actor.email]],
+    });
+    return { id: String(row._id), deleted: true, deletedBy: actor.name || actor.email, deletedAt: at };
   })
 );
 

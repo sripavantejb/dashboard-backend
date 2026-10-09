@@ -59,4 +59,26 @@ describe('payments, expenses and revenue', () => {
 
     await Promise.all(['/invoices', '/payments', '/recurring-payments', '/transactions', '/revenue', '/revenue/outstanding'].map((p) => admin.ok(admin.get(p))));
   });
+
+  it('keeps a deleted transaction in the ledger and drops it from the remaining amount', async () => {
+    const now = new Date().toISOString();
+    const created = await admin.ok(admin.post('/transactions', { type: 'income', title: 'Retainer', amount: 2000, category: 'client', date: now }));
+    const before = await admin.ok(admin.get('/transactions?source=transactions'));
+    const live = before.rows.find((r: { id: string }) => r.id === created._id);
+    expect(live.deleted).toBe(false);
+    expect(live.remaining).toBe(before.totals.remaining);
+
+    await admin.ok(admin.delete(`/transactions/${created._id}`));
+    const after = await admin.ok(admin.get('/transactions?source=transactions'));
+    const deleted = after.rows.find((r: { id: string }) => r.id === created._id);
+    expect(deleted.deleted).toBe(true);
+    expect(deleted.deletedBy).toBe('Admin User');
+    expect(deleted.remaining).toBeNull();
+    expect(deleted.history.some((h: { action: string; by: string }) => h.action === 'deleted' && h.by === 'Admin User')).toBe(true);
+    expect(after.totals.remaining).toBe(before.totals.remaining - 2000);
+    expect(after.totals.net).toBe(after.totals.remaining);
+
+    const again = await admin.delete(`/transactions/${created._id}`);
+    expect(again.status).toBe(404);
+  });
 });

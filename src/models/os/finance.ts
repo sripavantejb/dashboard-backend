@@ -41,6 +41,8 @@ const transactionSchema = osSchema({
   paymentMethod: oneOf(TRANSACTION_PAYMENT_METHODS, 'upi'),
   reference: str(),
   notes: str(),
+  deletedBy: str(),
+  deletedAt: Date,
   history: { type: [historySchema], default: [] },
 });
 transactionSchema.index({ organizationId: 1, recordStatus: 1, date: -1 });
