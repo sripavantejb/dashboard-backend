@@ -5,7 +5,7 @@ import type { Model } from 'mongoose';
 import {
   SalesEmployee, SalesLead, SalesDeal, SalesCustomer, SalesCall, SalesMeeting, SalesFollowUp, SalesQuotation,
   SalesProposal, SalesTask, SalesTarget, SalesStageTarget, SalesTerritory, SalesApproval, SalesAttendance, SalesWorkStatus,
-  SalesActivityEvent, SalesMessage, User, EGAApplication, nextSequence,
+  SalesActivityEvent, SalesMessage, SalesHourlyCheckin, User, EGAApplication, nextSequence,
 } from '../../../models/index.js';
 import { authenticate } from '../../../shared/middleware/auth.js';
 import { route, parseBody, oid, isObjectId, escapeRegex } from '../../../shared/utils/crud.js';
@@ -25,7 +25,9 @@ import { salesPortalHref } from '../services/sales-portal.service.js';
 import { callingRoutes } from '../calling/routes.js';
 import { buildCallAnalytics, loggedCallMatch, withCallerNames } from '../calling/analytics.js';
 import { toDialablePhone } from '../calling/phone.js';
-import { buildBdaTeamActivity } from '../services/sales-team-activity.service.js';
+import { buildBdaTeamActivity, buildBdaPerformanceBoard } from '../services/sales-team-activity.service.js';
+import { auditLeadQuality } from '../services/lead-quality.service.js';
+import { findLeads, importFoundLeads, leadFinderSources } from '../services/lead-finder.service.js';
 import {
   buildSalesLeadImportCsv,
   buildSalesLeadImportTemplate,
@@ -175,6 +177,97 @@ salesCrmRoutes.get('/me', route(async (req) => {
 }));
 
 salesCrmRoutes.get('/team-activity', needAdmin as never, route(async (req) => buildBdaTeamActivity(orgOf(req))));
+
+function istHourKey(now = new Date()) {
+  const ist = new Date(now.getTime() + 330 * 60 * 1000);
+  return ist.toISOString().slice(0, 13);
+}
+
+function isSashi(req: AuthenticatedRequest) {
+  const email = String(req.user?.email || '').toLowerCase();
+  const name = String(ctx(req).name || '').toLowerCase();
+  return email.includes('shashi') || name.includes('shashi') || name.includes('sashi');
+}
+
+salesCrmRoutes.get('/team-board', needAdmin as never, route(async (req) => buildBdaPerformanceBoard(orgOf(req))));
+salesCrmRoutes.get('/lead-audit', needAdmin as never, route(async (req) => auditLeadQuality(orgOf(req))));
+salesCrmRoutes.get('/lead-finder/sources', needAdmin as never, route(async () => leadFinderSources()));
+salesCrmRoutes.post('/lead-finder/search', needAdmin as never, route(async (req) => findLeads(req.body)));
+salesCrmRoutes.post('/lead-finder/import', needAdmin as never, route(async (req) => importFoundLeads(orgOf(req), req.user!.email, req.body)));
+
+salesCrmRoutes.get('/hourly-checkin', route(async (req) => {
+  if (!isSashi(req)) return { eligible: false };
+  const s = ctx(req);
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+  const hourKey = istHourKey();
+  const [contacted, calls, existing] = await Promise.all([
+    SalesLead.countDocuments({
+      organizationId: orgOf(req),
+      recordStatus: 'active',
+      status: 'contacted',
+      updatedAt: { $gte: since },
+      assignedEmployeeId: s.employeeId,
+    }),
+    SalesCall.countDocuments({
+      organizationId: orgOf(req),
+      employeeId: s.employeeId,
+      calledAt: { $gte: since },
+      ...loggedCallMatch(),
+    }),
+    SalesHourlyCheckin.findOne({ organizationId: orgOf(req), employeeId: s.employeeId, hourKey }).lean(),
+  ]);
+  return {
+    eligible: true,
+    hourKey,
+    contacted,
+    calls,
+    submitted: Boolean(existing),
+    remarks: existing?.remarks || '',
+    reason: existing?.reason || '',
+  };
+}));
+
+salesCrmRoutes.post('/hourly-checkin', route(async (req) => {
+  if (!isSashi(req)) throw new ForbiddenError('Hourly check-in is only for Sashi');
+  const body = parseBody<{ remarks: string; reason: string }>(
+    z.object({
+      remarks: z.string().min(2, 'Add a short remark for this hour'),
+      reason: z.string().min(2, 'Add why this is the update'),
+    }),
+    req.body,
+  );
+  const s = ctx(req);
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+  const hourKey = istHourKey();
+  const [contacted, calls] = await Promise.all([
+    SalesLead.countDocuments({
+      organizationId: orgOf(req),
+      recordStatus: 'active',
+      status: 'contacted',
+      updatedAt: { $gte: since },
+      assignedEmployeeId: s.employeeId,
+    }),
+    SalesCall.countDocuments({
+      organizationId: orgOf(req),
+      employeeId: s.employeeId,
+      calledAt: { $gte: since },
+      ...loggedCallMatch(),
+    }),
+  ]);
+  const row = await SalesHourlyCheckin.findOneAndUpdate(
+    { organizationId: orgOf(req), employeeId: s.employeeId, hourKey },
+    {
+      $set: { contacted, calls, remarks: body.remarks.trim(), reason: body.reason.trim(), updatedBy: req.user!.email },
+      $setOnInsert: { createdBy: req.user!.email },
+    },
+    { upsert: true, new: true },
+  );
+  logSales(req, 'hourly_checkin', `Hourly update · ${contacted} contacted`, {
+    detail: body.remarks.trim(),
+    metadata: { reason: body.reason.trim(), contacted, calls },
+  });
+  return row;
+}));
 
 /** BDA Home / My Day — overdue work, today's agenda, hot leads, quick stats. */
 salesCrmRoutes.get('/my-day', route(async (req) => {

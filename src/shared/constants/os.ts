@@ -93,7 +93,7 @@ export const EGA_STATUSES = ['pending', 'selected', 'lookback', 'rejected'] as c
 
 // Sales CRM
 export const SALES_EMPLOYEE_STATUSES = ['active', 'inactive', 'on_leave'] as const;
-export const SALES_LEAD_SOURCES = ['website', 'referral', 'instagram', 'facebook', 'linkedin', 'google', 'ads', 'campaign', 'cold_outreach', 'existing_customer', 'other'] as const;
+export const SALES_LEAD_SOURCES = ['website', 'referral', 'whatsapp', 'instagram', 'facebook', 'linkedin', 'youtube', 'twitter', 'telegram', 'google', 'apollo', 'ads', 'campaign', 'cold_outreach', 'existing_customer', 'other'] as const;
 export const SALES_LEAD_TEMPERATURES = ['hot', 'warm', 'cold'] as const;
 export const SALES_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'unqualified', 'converted', 'lost'] as const;
 export const SALES_DEAL_STAGES = ['new', 'contacted', 'qualified', 'meeting', 'proposal', 'negotiation', 'won', 'lost'] as const;

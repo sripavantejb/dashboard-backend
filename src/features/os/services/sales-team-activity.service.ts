@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { SalesActivityEvent, SalesAttendance, SalesCall, SalesDeal, SalesEmployee, SalesFollowUp, SalesLead, User } from '../../../models/index.js';
+import { SalesActivityEvent, SalesAttendance, SalesCall, SalesDeal, SalesEmployee, SalesFollowUp, SalesHourlyCheckin, SalesLead, User } from '../../../models/index.js';
 import { SALES_LEAD_STATUSES } from '../../../shared/constants/os.js';
 import { loggedCallMatch } from '../calling/analytics.js';
 
@@ -128,5 +128,65 @@ export async function buildBdaTeamActivity(organizationId: string) {
     },
     pipeline: teamPipeline,
     rows,
+  };
+}
+
+function istHourKey(now = new Date()) {
+  const ist = new Date(now.getTime() + 330 * 60 * 1000);
+  return ist.toISOString().slice(0, 13);
+}
+
+/** Side-by-side BDA board plus the last hour of contact activity and Sashi check-ins. */
+export async function buildBdaPerformanceBoard(organizationId: string) {
+  const activity = await buildBdaTeamActivity(organizationId);
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+  const ids = activity.rows.map((r) => r.employeeId);
+  const [contacted, calls, events, checkins] = await Promise.all([
+    ids.length
+      ? SalesLead.find({
+        organizationId,
+        recordStatus: 'active',
+        status: 'contacted',
+        updatedAt: { $gte: since },
+        assignedEmployeeId: { $in: ids },
+      }).select('assignedEmployeeId').lean()
+      : [],
+    ids.length
+      ? SalesCall.find({ organizationId, calledAt: { $gte: since }, employeeId: { $in: ids }, ...loggedCallMatch() }).select('employeeId').lean()
+      : [],
+    SalesActivityEvent.find({ organizationId, createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(40).select('title detail actorName createdAt type').lean(),
+    SalesHourlyCheckin.find({ organizationId, createdAt: { $gte: new Date(Date.now() - 36 * 60 * 60 * 1000) } }).sort({ createdAt: -1 }).limit(24).lean(),
+  ]);
+
+  const rows = activity.rows.map((row) => ({
+    ...row,
+    contactedLastHour: contacted.filter((l) => idOf(l.assignedEmployeeId) === row.employeeId).length,
+    callsLastHour: calls.filter((c) => idOf(c.employeeId) === row.employeeId).length,
+  }));
+
+  return {
+    date: activity.date,
+    hourKey: istHourKey(),
+    totals: activity.totals,
+    pipeline: activity.pipeline,
+    rows,
+    hourly: events.map((e) => ({
+      title: e.title,
+      detail: e.detail || '',
+      actorName: e.actorName || 'BDA',
+      type: e.type,
+      createdAt: e.createdAt,
+    })),
+    checkins: checkins.map((c) => ({
+      id: String(c._id),
+      employeeId: String(c.employeeId),
+      name: rows.find((r) => r.employeeId === String(c.employeeId))?.name || 'BDA',
+      hourKey: c.hourKey,
+      contacted: c.contacted,
+      calls: c.calls,
+      remarks: c.remarks,
+      reason: c.reason,
+      createdAt: c.createdAt,
+    })),
   };
 }

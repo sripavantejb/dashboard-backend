@@ -25,6 +25,13 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
+  LLM_API_KEY: z.string().optional(),
+  LLM_BASE_URL: z.string().default('https://api.openai.com/v1'),
+  LLM_MODEL: z.string().default('gpt-4o-mini'),
+  LEAD_AUDIT_MAX_TOKENS: z.coerce.number().int().min(64).max(2000).default(900),
+  LEAD_AUDIT_TIMEOUT_MS: z.coerce.number().int().min(2000).max(30000).default(10000),
+  GOOGLE_MAPS_API_KEY: z.string().optional(),
+  APOLLO_API_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

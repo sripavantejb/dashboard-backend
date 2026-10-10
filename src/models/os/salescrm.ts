@@ -289,6 +289,17 @@ const activitySchema = osSchema({
 activitySchema.index({ organizationId: 1, createdAt: -1 });
 export const SalesActivityEvent = osModel('SalesActivityEvent', activitySchema);
 
+const hourlyCheckinSchema = osSchema({
+  employeeId: ref('SalesEmployee', { required: true, index: true }),
+  hourKey: str({ index: true }),
+  contacted: { type: Number, default: 0 },
+  calls: { type: Number, default: 0 },
+  remarks: str(),
+  reason: str(),
+});
+hourlyCheckinSchema.index({ organizationId: 1, employeeId: 1, hourKey: 1 }, { unique: true });
+export const SalesHourlyCheckin = osModel('SalesHourlyCheckin', hourlyCheckinSchema);
+
 const messageSchema = osSchema({
   channel: oneOf(['email', 'whatsapp'] as const, 'email', { index: true }),
   direction: oneOf(['outbound', 'inbound'] as const, 'outbound'),
