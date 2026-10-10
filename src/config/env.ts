@@ -32,6 +32,9 @@ const envSchema = z.object({
   LEAD_AUDIT_TIMEOUT_MS: z.coerce.number().int().min(2000).max(30000).default(10000),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
   APOLLO_API_KEY: z.string().optional(),
+  GEMMA_API_KEY: z.string().optional(),
+  GEMMA_BASE_URL: z.string().default('https://generativelanguage.googleapis.com/v1beta'),
+  GEMMA_MODEL: z.string().default('gemma-4-26b-a4b-it'),
 });
 
 const parsed = envSchema.safeParse(process.env);
